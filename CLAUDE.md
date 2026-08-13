@@ -91,10 +91,12 @@ halves are routinely entered by different people on different days.
 ## Open
 
 - Not deployed; Supabase not yet configured. See `DEPLOY.md`.
-- **Role separation is UI-level only.** Both passcodes reach Supabase through the
-  same anon key, so a collector who extracted it could read everything directly.
-  Fine for four colleagues; not a security boundary. Real separation would need
-  Supabase Auth and per-role RLS policies.
+- **Role separation is enforced in app code, not in the database.** Streamlit runs
+  server-side and never ships `st.secrets` to the browser, so a collector cannot
+  extract the anon key from the page — the split holds against ordinary use. What
+  it is not: a database-level boundary. Anyone who obtains the key by other means
+  bypasses the passcode entirely, because RLS grants `anon` full access to all
+  three tables. Real separation would need Supabase Auth and per-role policies.
 - Recalling field IDs in the field in 2027 is unsolved beyond the working-field
   picker; deferred deliberately while 2026 collection is the focus.
 - `soil_moisture.parquet` covers only 30 Jun – 31 Jul 2026, bounded by what the

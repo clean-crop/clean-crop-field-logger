@@ -86,11 +86,21 @@ Everyone types their name at sign-in, and it is stamped on every row they enter.
 Nothing to install — it is a web page they can add to the phone home screen
 (Safari: Share → Add to Home Screen) so it opens like an app.
 
-Worth being clear-eyed about: this split is a **UI convenience, not a security
-boundary.** Both passcodes talk to Supabase with the same anon key, so someone
-determined who pulled that key out of the page could read the tables directly.
-That is an acceptable trade for four colleagues logging agronomic data — but do
-not put anything genuinely sensitive in here on the strength of it.
+How solid is that split? Reasonably. Streamlit runs Python on the server and
+sends the browser only the rendered page, so the Supabase key stays server-side
+and a collector cannot pull it out of the page to query the tables directly.
+
+What it is not is a *database-level* boundary. RLS grants `anon` full access, so
+anyone who gets the key by another route — a leaked secrets file, a screenshot of
+the Supabase dashboard — bypasses the passcode entirely. Good enough for four
+colleagues logging agronomic data; don't put anything genuinely sensitive here on
+the strength of it.
+
+**On making the app public:** Community Cloud's free tier allows one private app
+and unlimited public ones. A public app is only public in the sense that anyone
+with the URL reaches the *passcode screen* — the data behind it stays gated, and
+the key stays server-side. Choose a passcode that isn't guessable and this is a
+reasonable trade.
 
 ---
 
