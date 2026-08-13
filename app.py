@@ -5,10 +5,15 @@ Phone-friendly data collection for dryland mung bean fields. Separate from the
 Arbol soil-moisture monitoring dashboard; this one is about building a season-
 over-season panel: stable field IDs + GPS + planting/management + harvest.
 
+The field is chosen once, at the top, and every tab works on that field — so a
+grower standing in one place fills in planting, visits and harvest without
+re-selecting anything.
+
 Gated by a shared passcode (set `app_passcode` in Streamlit secrets).
 """
 
 import datetime as dt
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -56,10 +61,58 @@ if not db.using_supabase():
 
 fields_df = db.read("fields")
 YEAR_DEFAULT = dt.date.today().year
+MAP_HOME = (36.0, -98.0)   # where the map opens before a field is pinned (NW Oklahoma)
+
+
+# ── The working field, chosen once for every tab ───────────────────────────
+def field_label(r):
+    farm = f" · {r.farm_name}" if getattr(r, "farm_name", None) and pd.notna(r.farm_name) else ""
+    return f"{r.field_id} — {r.grower_name}{farm}"
+
+
+active_fid = None
+if len(fields_df):
+    opts = {field_label(r): r.field_id for r in fields_df.itertuples()}
+    # Default to the field most recently registered or worked on, so saving a
+    # field and moving to Planting carries the selection across with no re-picking.
+    remembered = st.session_state.get("active_fid")
+    labels = list(opts)
+    idx = next((i for i, lb in enumerate(labels) if opts[lb] == remembered), 0)
+    chosen = st.selectbox("Working field", labels, index=idx, key="field_picker")
+    active_fid = opts[chosen]
+    st.session_state["active_fid"] = active_fid
+
+season_year = st.number_input("Season year", 2020, 2100, YEAR_DEFAULT, key="season_year")
+st.divider()
 
 tab_new, tab_plant, tab_visit, tab_harvest, tab_data = st.tabs(
-    ["📍 New Field", "🌱 Planting", "🔍 Visit", "🚜 Harvest", "📋 Data"]
+    ["📍 New Field", "🌱 Planting", "🔍 Visits", "🚜 Harvest", "📋 Data"]
 )
+
+
+def needs_field():
+    """Shared guard for the tabs that operate on an already-registered field."""
+    if active_fid is None:
+        st.info("No fields registered yet — add one on the **New Field** tab first.")
+        return True
+    return False
+
+
+def season_row(fid, year):
+    """The field_seasons row for this field-year, or None."""
+    s = db.read("field_seasons")
+    if not len(s):
+        return None
+    m = s[(s.field_id == fid) & (s.season_year == int(year))]
+    return m.iloc[0] if len(m) else None
+
+
+def prior(row, col):
+    """Previously saved value for a column, or None — used to prefill forms."""
+    if row is None or col not in row or pd.isna(row[col]):
+        return None
+    return row[col]
+
 
 # ── New Field: register a physical field once, reuse forever ───────────────
 with tab_new:
@@ -72,122 +125,224 @@ with tab_new:
     c1, c2 = st.columns(2)
     grower = c1.text_input("Grower name *", key="nf_grower")
     farm = c2.text_input("Farm name", key="nf_farm")
-    c3, c4 = st.columns(2)
-    town = c3.text_input("Nearest town *", key="nf_town", placeholder="Loyal")
-    county = c4.text_input("County", key="nf_county", placeholder="Kingfisher")
 
-    st.markdown("**Location** — stand in the field and pin it, or type coordinates.")
-    m1, m2 = st.columns(2)
-    lat = m1.number_input("Latitude *", value=36.0, format="%.6f", key="nf_lat")
-    lon = m2.number_input("Longitude *", value=-98.0, format="%.6f", key="nf_lon")
+    st.markdown("**Location**")
+    st.caption("Pin it on the map while standing in the field, **or** type coordinates "
+               "you already have — both work, use whichever suits.")
+    lat = st.session_state.get("nf_lat")
+    lon = st.session_state.get("nf_lon")
+    has_pin = lat is not None and lon is not None
 
     try:
         import folium
+        from folium.plugins import LocateControl
         from streamlit_folium import st_folium
 
-        fmap = folium.Map(location=[lat, lon], zoom_start=14,
+        fmap = folium.Map(location=[lat, lon] if has_pin else list(MAP_HOME),
+                          zoom_start=16 if has_pin else 8,
                           tiles="Esri.WorldImagery", attr="Esri")
-        folium.Marker([lat, lon], tooltip="Current pin").add_to(fmap)
-        st.caption("Tap the map to move the pin, then press **Use pinned location**.")
-        clicked = st_folium(fmap, height=320, width=None,
+        # "Find me" button — centres the map on the phone's GPS. Requires HTTPS:
+        # browsers block geolocation on insecure origins, so this does nothing on
+        # a plain-http LAN address and only works once the app is deployed.
+        LocateControl(auto_start=True, flyTo=True,
+                      strings={"title": "Find my location"}).add_to(fmap)
+        if has_pin:
+            folium.Marker([lat, lon], tooltip="This field").add_to(fmap)
+
+        st.caption("Tap **Find my location** (the ⌖ button), then tap the map where "
+                   "you're standing to drop the pin.")
+        clicked = st_folium(fmap, height=340, width=None,
                             returned_objects=["last_clicked"], key="nf_map")
         if clicked and clicked.get("last_clicked"):
             cl = clicked["last_clicked"]
-            st.info(f"Pinned: {cl['lat']:.6f}, {cl['lng']:.6f}")
-            if st.button("Use pinned location", key="nf_usepin"):
-                st.session_state.nf_lat = round(cl["lat"], 6)
-                st.session_state.nf_lon = round(cl["lng"], 6)
-                st.rerun()
-    except Exception:
-        st.map(pd.DataFrame({"lat": [lat], "lon": [lon]}), zoom=12)
+            if (round(cl["lat"], 6), round(cl["lng"], 6)) != (lat, lon):
+                st.info(f"Tapped {cl['lat']:.6f}, {cl['lng']:.6f}")
+                if st.button("Use this location", key="nf_usepin"):
+                    st.session_state["nf_lat"] = round(cl["lat"], 6)
+                    st.session_state["nf_lon"] = round(cl["lng"], 6)
+                    st.rerun()
+    except Exception as e:
+        st.error(f"Map unavailable ({e}). Use manual entry below.")
 
-    irrigated = st.checkbox("Irrigated (leave unchecked for dryland)", key="nf_irr")
-    fid_default = db.suggest_field_id(town, fields_df)
-    fid = st.text_input("Field ID *", value=fid_default, key="nf_fid",
-                        help="Stable identifier reused every season, e.g. LOYAL-01")
+    if has_pin:
+        st.success(f"📍 Pinned at **{lat:.6f}, {lon:.6f}**")
+    else:
+        st.caption("No location pinned yet.")
+
+    # A co-equal path to the map, not a fallback: fields recorded before this app
+    # existed already have coordinates, and back-filling them by tapping a map is
+    # both slower and less accurate than pasting the numbers that were measured.
+    st.markdown("**Type coordinates**")
+    h1, h2 = st.columns(2)
+    m_lat = h1.number_input("Latitude", value=None, format="%.6f", key="nf_mlat",
+                            placeholder="35.972976")
+    m_lon = h2.number_input("Longitude", value=None, format="%.6f", key="nf_mlon",
+                            placeholder="-98.118345")
+    if st.button("Use these coordinates", key="nf_usemanual"):
+        if m_lat is None or m_lon is None:
+            st.error("Enter both latitude and longitude.")
+        elif not (-90 <= m_lat <= 90 and -180 <= m_lon <= 180):
+            st.error("Those aren't valid coordinates — latitude is −90 to 90, "
+                     "longitude −180 to 180.")
+        elif m_lon > 0:
+            # Everything in this program is in Oklahoma; a positive longitude is
+            # the eastern hemisphere and almost always a dropped minus sign.
+            st.error(f"Longitude {m_lon} is east of Greenwich — did you mean "
+                     f"−{m_lon}? Oklahoma longitudes are negative.")
+        else:
+            st.session_state["nf_lat"] = round(m_lat, 6)
+            st.session_state["nf_lon"] = round(m_lon, 6)
+            st.rerun()
+
+    water = st.radio("Water *", ["Dryland", "Irrigated"], index=None,
+                     horizontal=True, key="nf_water")
+
+    fid_hint = db.suggest_field_id(grower, fields_df)
+    fid = st.text_input("Field ID *", key="nf_fid", placeholder=fid_hint,
+                        help="Permanent identifier, reused every season. "
+                             "Convention: grower surname + number, e.g. DOE-01.")
+    st.caption(f"Suggested next ID for this grower: **{fid_hint}** — type it in.")
+
     nf_notes = st.text_area("Notes", key="nf_notes",
                             placeholder="Anything notable about this ground — "
                                         "creek bottom, drainage, past problems…")
 
+    # Flag coordinates that land on an already-registered field. Compared with a
+    # distance tolerance (1e-5 deg ~ 1 m) rather than rounded equality: pandas
+    # rounds half-to-even and Python's round() does not, so they disagree on .5.
+    dup_loc = None
+    if has_pin and len(fields_df):
+        close = ((fields_df.lat - lat).abs() < 1e-5) & ((fields_df.lon - lon).abs() < 1e-5)
+        if close.any():
+            dup_loc = str(fields_df.loc[close, "field_id"].iloc[0])
+
+    allow_dup = False
+    if dup_loc:
+        st.warning(f"That pin is within about a metre of **{dup_loc}**. "
+                   f"If this is a different field, re-pin it.")
+        allow_dup = st.checkbox("Save anyway — genuinely two fields at one point",
+                                key="nf_allow_dup_loc")
+
     if st.button("Save field", type="primary", key="nf_save"):
-        if not (grower and town and fid):
-            st.error("Grower, nearest town, and Field ID are required.")
+        if not (grower and fid):
+            st.error("Grower name and Field ID are required.")
+        elif not has_pin:
+            st.error("Pin the field on the map first, or enter coordinates by hand.")
+        elif water is None:
+            st.error("Choose Dryland or Irrigated.")
         elif len(fields_df) and fid in set(fields_df.field_id.astype(str)):
             st.error(f"Field ID '{fid}' already exists — pick a different one.")
+        elif dup_loc and not allow_dup:
+            st.error(f"That pin matches {dup_loc}. Re-pin the field, or tick the box "
+                     f"above to save both at the same point.")
         else:
             ok, msg = db.insert("fields", dict(
                 field_id=fid, grower_name=grower, farm_name=farm,
-                location_name=town, county=county, lat=lat, lon=lon,
-                irrigated=irrigated, notes=nf_notes))
-            (st.success if ok else st.error)(msg)
-            if ok:
+                lat=lat, lon=lon, irrigated=(water == "Irrigated"),
+                notes=nf_notes))
+            if not ok:
+                st.error(msg)
+            else:
                 st.cache_data.clear()
+                # Keep the grower and farm — the next field is usually the same
+                # grower — but clear everything specific to the field just saved.
+                # Popping resets a widget to its default; assigning to a widget key
+                # after the widget exists raises, so these must be popped, not set.
+                for k in ("nf_lat", "nf_lon", "nf_notes", "nf_map", "nf_water",
+                          "nf_fid", "nf_mlat", "nf_mlon", "nf_allow_dup_loc"):
+                    st.session_state.pop(k, None)
+                st.session_state["active_fid"] = fid       # carry into the other tabs
+                st.session_state.pop("field_picker", None)
+                st.session_state["_just_saved"] = fid
+                st.rerun()
 
-
-# ── shared helper ──────────────────────────────────────────────────────────
-def pick_field(key, label="Field *"):
-    """Field selector shared by the planting/visit/harvest tabs."""
-    if not len(fields_df):
-        st.info("No fields registered yet — add one on the **New Field** tab first.")
-        return None
-    opts = {f"{r.field_id} — {r.grower_name} ({r.location_name})": r.field_id
-            for r in fields_df.itertuples()}
-    return opts[st.selectbox(label, list(opts), key=key)]
+    if st.session_state.get("_just_saved"):
+        st.success(f"Saved **{st.session_state.pop('_just_saved')}** and made it the "
+                   "working field. Planting, Visits and Harvest now point at it.")
 
 
 # ── Planting ───────────────────────────────────────────────────────────────
 with tab_plant:
     st.subheader("Planting record")
-    fid = pick_field("pl_fid")
-    if fid:
-        year = st.number_input("Season year *", 2020, 2100, YEAR_DEFAULT, key="pl_yr")
-        pdate = st.date_input("Planting date *", value=dt.date.today(), key="pl_date")
-        c1, c2 = st.columns(2)
-        acres = c1.number_input("Acres planted *", 0.0, step=10.0, key="pl_ac")
-        seed = c2.number_input("Total seed planted (lbs)", 0.0, step=50.0, key="pl_seed",
-                               help="Seed lbs ÷ acres gives seeding rate — "
-                                    "one of the few management variables we can model.")
-        if acres > 0 and seed > 0:
-            st.caption(f"→ Seeding rate: **{seed/acres:.1f} lbs/acre**")
+    if not needs_field():
+        row = season_row(active_fid, season_year)
+        st.caption(f"**{active_fid}** · {int(season_year)}"
+                   + ("  — editing the saved record" if row is not None else ""))
 
-        c3, c4 = st.columns(2)
-        soil = c3.selectbox("Soil moisture at planting *",
-                            ["", "dry", "adequate", "wet"], key="pl_soil",
-                            help="Your 2025 notes suggest this matters a lot: the field "
-                                 "'planted into moisture' yielded 867, the one 'planted "
-                                 "into dry' yielded 122.")
-        method = c4.selectbox("Planting method", ["", "drilled", "broadcast", "other"],
-                              key="pl_method")
-        c5, c6 = st.columns(2)
-        variety = c5.text_input("Variety", key="pl_var")
-        prev = c6.text_input("Previous crop", key="pl_prev")
-        c7, c8 = st.columns(2)
-        spacing = c7.number_input("Row spacing (in)", 0.0, step=1.0, key="pl_sp")
-        exp = c8.number_input("Grower's years growing mung beans", 0, step=1, key="pl_exp")
-        notes = st.text_area("Notes", key="pl_notes")
+        pdate = st.date_input("Planting date *",
+                              value=pd.to_datetime(prior(row, "planting_date")).date()
+                              if prior(row, "planting_date") else dt.date.today(),
+                              key="pl_date")
+        c1, c2 = st.columns(2)
+        acres = c1.number_input("Acres planted *", 0.0, value=prior(row, "acres"),
+                                step=10.0, key="pl_ac")
+        rate = c2.number_input("Seed planted (lbs/acre) *", 0.0,
+                               value=prior(row, "seed_lbs_per_acre"),
+                               step=1.0, key="pl_rate")
+        if acres and rate:
+            st.caption(f"→ Total seed: **{acres * rate:,.0f} lbs** over {acres:,.0f} acres")
+
+        soil_opts = ["dry", "adequate", "wet"]
+        soil_prior = prior(row, "soil_condition_planting")
+        soil = st.radio("Soil moisture at planting *", soil_opts,
+                        index=soil_opts.index(soil_prior) if soil_prior in soil_opts else None,
+                        horizontal=True, key="pl_soil",
+                        help="Your 2025 notes suggest this matters a lot: the field "
+                             "'planted into moisture' yielded 867 lbs/ac, the one "
+                             "'planted into dry' yielded 122.")
+
+        with st.expander("Optional details"):
+            m_opts = ["drilled", "broadcast", "other"]
+            m_prior = prior(row, "planting_method")
+            method = st.radio("Planting method", m_opts,
+                              index=m_opts.index(m_prior) if m_prior in m_opts else None,
+                              horizontal=True, key="pl_method")
+            spacing = st.number_input("Row spacing (in)", 0.0,
+                                      value=prior(row, "row_spacing_in"),
+                                      step=1.0, key="pl_sp")
+
+        notes = st.text_area("Planting notes", value=prior(row, "planting_notes") or "",
+                             key="pl_notes")
 
         if st.button("Save planting", type="primary", key="pl_save"):
-            if acres <= 0 or not soil:
-                st.error("Acres and soil moisture at planting are required.")
+            if not acres or not rate or not soil:
+                st.error("Acres, seed lbs/acre, and soil moisture at planting are required.")
             else:
                 ok, msg = db.upsert_season(dict(
-                    field_id=fid, season_year=int(year),
-                    planting_date=str(pdate), acres=acres,
-                    seed_lbs=seed or None, variety=variety, previous_crop=prev,
+                    field_id=active_fid, season_year=int(season_year),
+                    planting_date=str(pdate), acres=acres, seed_lbs_per_acre=rate,
                     soil_condition_planting=soil, planting_method=method,
-                    row_spacing_in=spacing or None,
-                    grower_years_experience=int(exp) if exp else None, notes=notes))
-                (st.success if ok else st.error)(msg)
+                    row_spacing_in=spacing, planting_notes=notes))
+                if ok:
+                    st.success("Planting saved.")
+                    st.cache_data.clear()
+                else:
+                    st.error(msg)
 
 
-# ── Mid-season visit ───────────────────────────────────────────────────────
+# ── Mid-season visits (as many as the grower wants) ────────────────────────
 with tab_visit:
-    st.subheader("Field visit")
-    st.caption("Quick mid-season checkpoint — lets us check the moisture model "
-               "against what the crop actually looked like, while the season is live.")
-    fid = pick_field("v_fid")
-    if fid:
-        year = st.number_input("Season year *", 2020, 2100, YEAR_DEFAULT, key="v_yr")
+    st.subheader("Field visits")
+    if not needs_field():
+        st.caption(f"**{active_fid}** · {int(season_year)}")
+
+        visits = db.read("visits")
+        mine = visits[(visits.field_id == active_fid) &
+                      (visits.season_year == int(season_year))] if len(visits) else pd.DataFrame()
+
+        if len(mine):
+            st.markdown(f"**{len(mine)} visit(s) logged this season**")
+            for r in mine.sort_values("visit_date", ascending=False).itertuples():
+                stage = f" · {r.growth_stage}" if pd.notna(r.growth_stage) and r.growth_stage else ""
+                score = f" · condition {int(r.condition_score)}/5" if pd.notna(r.condition_score) else ""
+                with st.container(border=True):
+                    st.markdown(f"**{r.visit_date}**{stage}{score}")
+                    if pd.notna(r.notes) and r.notes:
+                        st.write(r.notes)
+        else:
+            st.caption("No visits logged for this field-year yet.")
+
+        st.markdown("**Add a visit**")
         vdate = st.date_input("Visit date *", value=dt.date.today(), key="v_date")
         stage = st.selectbox("Growth stage",
                              ["", "emergence", "vegetative", "flowering",
@@ -195,67 +350,131 @@ with tab_visit:
         score = st.slider("Crop condition (1 poor → 5 excellent)", 1, 5, 3, key="v_score")
         vnotes = st.text_area("Observations", key="v_notes",
                               placeholder="Stand quality, weed pressure, moisture stress…")
-        if st.button("Save visit", type="primary", key="v_save"):
-            ok, msg = db.insert("visits", dict(
-                field_id=fid, season_year=int(year), visit_date=str(vdate),
-                growth_stage=stage, condition_score=int(score), notes=vnotes))
-            (st.success if ok else st.error)(msg)
+
+        if st.button("Add this visit", type="primary", key="v_save"):
+            if not (vnotes or stage):
+                st.error("Add an observation or a growth stage — "
+                         "a visit with neither records nothing.")
+            else:
+                ok, msg = db.insert("visits", dict(
+                    field_id=active_fid, season_year=int(season_year),
+                    visit_date=str(vdate), growth_stage=stage,
+                    condition_score=int(score), notes=vnotes))
+                if ok:
+                    st.cache_data.clear()
+                    # Clear the entry boxes so the next visit starts blank.
+                    for k in ("v_notes", "v_stage", "v_score"):
+                        st.session_state.pop(k, None)
+                    st.rerun()
+                else:
+                    st.error(msg)
 
 
 # ── Harvest ────────────────────────────────────────────────────────────────
 with tab_harvest:
     st.subheader("Harvest record")
-    st.caption("Adds to the existing planting record for this field-year.")
-    fid = pick_field("h_fid")
-    if fid:
-        year = st.number_input("Season year *", 2020, 2100, YEAR_DEFAULT, key="h_yr")
-        seasons = db.read("field_seasons")
-        match = seasons[(seasons.field_id == fid) &
-                        (seasons.season_year == int(year))] if len(seasons) else pd.DataFrame()
-        if not len(match):
-            st.warning("No planting record for this field-year yet. You can still save "
-                       "harvest, but add the planting record so acres are captured.")
-        acres_known = float(match.acres.iloc[0]) if len(match) and pd.notna(match.acres.iloc[0]) else None
+    if not needs_field():
+        row = season_row(active_fid, season_year)
+        st.caption(f"**{active_fid}** · {int(season_year)}")
 
-        hdate = st.date_input("Harvest date", value=dt.date.today(), key="h_date")
-        net = st.number_input("Net lbs harvested *", 0.0, step=100.0, key="h_net")
-        clean = st.number_input("Cleanout %", 0.0, 100.0, step=0.5, key="h_clean")
-        if net > 0 and acres_known:
-            st.success(f"→ Yield: **{net/acres_known:.1f} lbs/acre** ({acres_known:.0f} ac)")
-        hnotes = st.text_area("Harvest notes", key="h_notes")
+        acres_known = prior(row, "acres")
+        if acres_known is None:
+            st.warning("No planting record for this field-year yet. You can still save "
+                       "the harvest, but add the planting record so acres are captured.")
+
+        hdate = st.date_input("Harvest date",
+                              value=pd.to_datetime(prior(row, "harvest_date")).date()
+                              if prior(row, "harvest_date") else dt.date.today(),
+                              key="h_date")
+        yield_pa = st.number_input("Harvested (lbs/acre) *", 0.0,
+                                   value=prior(row, "yield_lbs_per_acre"),
+                                   step=10.0, key="h_yield")
+        if yield_pa and acres_known:
+            st.success(f"→ Total: **{yield_pa * acres_known:,.0f} lbs** "
+                       f"over {acres_known:,.0f} acres")
+        hnotes = st.text_area("Harvest notes", value=prior(row, "harvest_notes") or "",
+                              key="h_notes")
 
         if st.button("Save harvest", type="primary", key="h_save"):
-            if net <= 0:
-                st.error("Net lbs is required.")
+            if not yield_pa:
+                st.error("Harvested lbs/acre is required.")
             else:
                 ok, msg = db.upsert_season(dict(
-                    field_id=fid, season_year=int(year), harvest_date=str(hdate),
-                    net_lbs=net, cleanout_pct=clean or None, notes=hnotes))
-                (st.success if ok else st.error)(msg)
+                    field_id=active_fid, season_year=int(season_year),
+                    harvest_date=str(hdate), yield_lbs_per_acre=yield_pa,
+                    harvest_notes=hnotes))
+                if ok:
+                    st.success("Harvest saved.")
+                    st.cache_data.clear()
+                else:
+                    st.error(msg)
 
 
 # ── Data review / export ───────────────────────────────────────────────────
 with tab_data:
     st.subheader("Logged data")
     f, s, v = db.read("fields"), db.read("field_seasons"), db.read("visits")
-    st.metric("Fields registered", len(f))
-    c1, c2 = st.columns(2)
-    c1.metric("Season records", len(s))
-    c2.metric("Visits logged", len(v))
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Fields", len(f))
+    c2.metric("Season records", len(s))
+    c3.metric("Visits", len(v))
 
+    combined = pd.DataFrame()
     if len(s) and len(f):
-        j = s.merge(f[["field_id", "grower_name", "location_name"]], on="field_id", how="left")
-        if "net_lbs" in j and "acres" in j:
-            j["lbs_per_acre"] = (j.net_lbs / j.acres).round(1)
-        if "seed_lbs" in j and "acres" in j:
-            j["seeding_rate"] = (j.seed_lbs / j.acres).round(1)
-        st.dataframe(j, use_container_width=True, hide_index=True)
+        combined = s.merge(f[["field_id", "grower_name", "farm_name", "lat", "lon",
+                              "irrigated"]], on="field_id", how="left")
+        if "yield_lbs_per_acre" in combined and "acres" in combined:
+            combined["total_lbs"] = (combined.yield_lbs_per_acre * combined.acres).round(0)
+        st.dataframe(combined, width="stretch", hide_index=True)
+    elif len(f):
+        st.dataframe(f, width="stretch", hide_index=True)
 
+    st.markdown("**Export**")
+    if len(combined):
+        st.download_button("⬇️ Everything (one sheet)", combined.to_csv(index=False),
+                           "field_logger_combined.csv", "text/csv",
+                           type="primary", key="dl_combined")
     for name, d in [("fields", f), ("field_seasons", s), ("visits", v)]:
         if len(d):
-            st.download_button(f"Download {name}.csv", d.to_csv(index=False),
+            st.download_button(f"⬇️ {name}.csv", d.to_csv(index=False),
                                f"{name}.csv", "text/csv", key=f"dl_{name}")
 
     if len(f):
         st.markdown("**Registered field locations**")
         st.map(f[["lat", "lon"]].dropna(), zoom=7)
+
+    # ── Regional soil moisture ─────────────────────────────────────────────
+    sm_path = Path(__file__).parent / "soil_moisture.parquet"
+    if sm_path.exists():
+        st.divider()
+        st.markdown("**Soil moisture this season**")
+        sm = pd.read_parquet(sm_path)
+
+        latest = sm.dropna(subset=["vswc"]).iloc[-1]
+        delta = (latest.vswc - latest.normal_med) * 100
+        m1, m2 = st.columns(2)
+        m1.metric(f"Latest ({latest.date:%d %b})", f"{latest.vswc * 100:.1f}%",
+                  f"{delta:+.1f} pts vs normal")
+        m2.metric("10-year normal", f"{latest.normal_med * 100:.1f}%")
+
+        # .values, not the Series: passing Series with a 0..n index alongside a
+        # datetime index makes pandas align on the old labels and silently
+        # produce an all-NaN frame, which renders as an empty chart.
+        chart = pd.DataFrame({
+            "This season": (sm.vswc * 100).values,
+            "Normal (median)": (sm.normal_med * 100).values,
+            "Normal (wet, 90th)": (sm.normal_high * 100).values,
+            "Normal (dry, 10th)": (sm.normal_low * 100).values,
+        }, index=pd.DatetimeIndex(sm.date, name="date"))
+        st.line_chart(chart, height=280)
+
+        st.caption(
+            f"Volumetric soil water, 7–28 cm (ERA5), at grid cell "
+            f"{latest.grid_lat:.2f}, {latest.grid_lon:.2f}, against the 2015–2024 "
+            f"normal for the same calendar days. **One regional curve, not per "
+            f"field** — ERA5's grid is about 28 km, so every field in the program "
+            f"sits in this cell or one beside it. ERA5 publishes 5–7 days behind, "
+            f"so the last few days of any series are provisional."
+        )
+        st.download_button("⬇️ soil_moisture.csv", sm.to_csv(index=False),
+                           "soil_moisture.csv", "text/csv", key="dl_sm")

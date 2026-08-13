@@ -18,12 +18,13 @@ LOCAL_DIR.mkdir(exist_ok=True)
 
 TABLES = ("fields", "field_seasons", "visits")
 
-FIELD_COLS = ["field_id", "grower_name", "farm_name", "location_name", "county",
+FIELD_COLS = ["field_id", "grower_name", "farm_name",
               "lat", "lon", "irrigated", "notes"]
-SEASON_COLS = ["field_id", "season_year", "planting_date", "acres", "seed_lbs",
-               "variety", "previous_crop", "soil_condition_planting",
-               "planting_method", "row_spacing_in", "grower_years_experience",
-               "harvest_date", "net_lbs", "cleanout_pct", "notes"]
+SEASON_COLS = ["field_id", "season_year",
+               "planting_date", "acres", "seed_lbs_per_acre",
+               "soil_condition_planting", "planting_method", "row_spacing_in",
+               "planting_notes",
+               "harvest_date", "yield_lbs_per_acre", "harvest_notes"]
 VISIT_COLS = ["field_id", "season_year", "visit_date", "growth_stage",
               "condition_score", "notes"]
 
@@ -52,6 +53,15 @@ def using_supabase() -> bool:
 
 def _csv_path(table: str) -> Path:
     return LOCAL_DIR / f"{table}.csv"
+
+
+def _write_csv(table: str, df: pd.DataFrame) -> None:
+    """
+    Write a table, always carrying the full column set. Without the reindex a
+    column nobody has filled in yet is simply absent from the file, so exports
+    silently vary in shape depending on what has been entered so far.
+    """
+    df.reindex(columns=_COLS[table]).to_csv(_csv_path(table), index=False)
 
 
 def read(table: str) -> pd.DataFrame:
@@ -86,7 +96,7 @@ def insert(table: str, record: dict):
     df = read(table)
     new = pd.DataFrame([record])
     df = pd.concat([df, new], ignore_index=True) if len(df) else new
-    df.to_csv(_csv_path(table), index=False)
+    _write_csv(table, df)
     return True, "Saved locally."
 
 
@@ -95,7 +105,11 @@ def upsert_season(record: dict):
     Insert or update the row for (field_id, season_year) — used so harvest data
     can be added later to a planting record without creating a duplicate.
     """
-    record = {k: v for k, v in record.items() if k in SEASON_COLS}
+    # Drop blanks so the planting save and the harvest save, which each send only
+    # their own half of the row, never write emptiness over the other's answers.
+    keys = ("field_id", "season_year")
+    record = {k: v for k, v in record.items()
+              if k in SEASON_COLS and (k in keys or (v is not None and v != ""))}
     cli = _client()
     if cli is not None:
         try:
@@ -127,13 +141,19 @@ def upsert_season(record: dict):
         new = pd.DataFrame([record])
         df = pd.concat([df, new], ignore_index=True) if len(df) else new
 
-    df.to_csv(_csv_path("field_seasons"), index=False)
+    _write_csv("field_seasons", df)
     return True, "Saved locally."
 
 
-def suggest_field_id(location_name: str, existing: pd.DataFrame) -> str:
-    """Propose a stable, readable field id like 'LOYAL-02'."""
-    stem = "".join(c for c in (location_name or "FIELD").upper()
+def suggest_field_id(grower_name: str, existing: pd.DataFrame) -> str:
+    """
+    Propose a stable, readable field id like 'DOE-02', built from the grower's
+    surname. Offered as a placeholder for the grower to type, not pre-filled —
+    the ID is the one value that must stay identical year after year, so it is
+    worth a deliberate keystroke rather than an accepted default.
+    """
+    parts = [p for p in (grower_name or "").split() if p]
+    stem = "".join(c for c in (parts[-1] if parts else "FIELD").upper()
                    if c.isalnum())[:10] or "FIELD"
     n = 1
     if len(existing) and "field_id" in existing:

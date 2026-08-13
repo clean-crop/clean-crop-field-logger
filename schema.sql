@@ -5,50 +5,51 @@
 -- seasons, and `field_seasons` holds one row per field per year. That split is
 -- the whole point of this tool — it's what turns scattered annual spreadsheets
 -- into a panel where the same field can be tracked year over year.
+--
+-- Location is lat/lon only. Nearest town and county were dropped deliberately:
+-- the coordinates already say where the field is, and a town name invites the
+-- centroid-of-a-parking-lot problem.
 
 -- ── Stable field identity (one row per physical field, forever) ─────────────
 create table if not exists fields (
-    field_id      text primary key,          -- e.g. 'LOYAL-01' — never changes
+    field_id      text primary key,          -- e.g. 'DOE-01' — never changes
     grower_name   text not null,
     farm_name     text,
-    location_name text,                      -- nearest town
-    county        text,
     lat           double precision not null,
     lon           double precision not null,
-    irrigated     boolean default false,     -- program is dryland, captured anyway
+    irrigated     boolean not null,          -- explicit choice, no default
     notes         text,
     created_at    timestamptz default now()
 );
 
 -- ── One row per field per season ───────────────────────────────────────────
 create table if not exists field_seasons (
-    id                     bigserial primary key,
-    field_id               text not null references fields(field_id) on delete cascade,
-    season_year            int  not null,
+    id                      bigserial primary key,
+    field_id                text not null references fields(field_id) on delete cascade,
+    season_year             int  not null,
 
     -- planting
-    planting_date          date,
-    acres                  double precision,
-    seed_lbs               double precision,   -- seed_lbs/acres = seeding rate
-    variety                text,
-    previous_crop          text,
-    soil_condition_planting text,              -- 'dry' | 'adequate' | 'wet'
-    planting_method        text,               -- 'drilled' | 'broadcast' | 'other'
-    row_spacing_in         double precision,
-    grower_years_experience int,
+    planting_date           date,
+    acres                   double precision,
+    seed_lbs_per_acre       double precision,   -- entered directly, not derived
+    soil_condition_planting text,               -- 'dry' | 'adequate' | 'wet'
+    planting_method         text,               -- optional
+    row_spacing_in          double precision,   -- optional
+    planting_notes          text,
 
     -- harvest (filled in later in the season)
-    harvest_date           date,
-    net_lbs                double precision,
-    cleanout_pct           double precision,
+    harvest_date            date,
+    yield_lbs_per_acre      double precision,   -- entered directly, not derived
+    harvest_notes           text,
 
-    notes                  text,
-    created_at             timestamptz default now(),
-    updated_at             timestamptz default now(),
-    unique (field_id, season_year)             -- one record per field per year
+    created_at              timestamptz default now(),
+    updated_at              timestamptz default now(),
+    unique (field_id, season_year)              -- one record per field per year
 );
 
 -- ── Mid-season visit observations (many per field per season) ──────────────
+-- Deliberately many-to-one: a season accumulates as many visit notes as the
+-- grower wants to leave, each with its own date.
 create table if not exists visits (
     id              bigserial primary key,
     field_id        text not null references fields(field_id) on delete cascade,

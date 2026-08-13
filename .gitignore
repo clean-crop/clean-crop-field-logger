@@ -3,3 +3,6 @@ __pycache__/
 .DS_Store
 .streamlit/secrets.toml
 local_data/
+
+# machine-local Claude Code permissions
+.claude/settings.local.json

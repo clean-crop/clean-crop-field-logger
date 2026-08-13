@@ -1,5 +1,10 @@
-streamlit==1.55.0
-pandas==2.3.3
-supabase==2.28.3
-folium==0.20.0
-streamlit-folium==0.27.4
+# Loose lower bounds, not exact pins — exact pins resolved from a local
+# Python 3.13 env are frequently unresolvable on whatever Python the host
+# assigns, which is what stalls Streamlit Cloud builds. Learned on the
+# sibling clean_crop_monitor deployment; don't tighten these back to ==.
+streamlit>=1.49
+pandas>=2.2
+supabase>=2.15
+folium>=0.19
+streamlit-folium>=0.24
+pyarrow>=17

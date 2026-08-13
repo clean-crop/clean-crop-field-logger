@@ -1,0 +1,18 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Field Logger",
+      "runtimeExecutable": "streamlit",
+      "runtimeArgs": [
+        "run",
+        "app.py",
+        "--server.port",
+        "8505",
+        "--server.headless",
+        "true"
+      ],
+      "port": 8505
+    }
+  ]
+}
