@@ -19,13 +19,17 @@ create table if not exists fields (
     lon           double precision not null,
     irrigated     boolean not null,          -- explicit choice, no default
     notes         text,
+    recorded_by   text,                      -- who entered it; four people share this app
     created_at    timestamptz default now()
 );
 
 -- ── One row per field per season ───────────────────────────────────────────
 create table if not exists field_seasons (
     id                      bigserial primary key,
-    field_id                text not null references fields(field_id) on delete cascade,
+    -- `on update cascade` so a mistyped field_id can be corrected in one place
+    -- and the child rows follow it, instead of the FK rejecting the rename.
+    field_id                text not null references fields(field_id)
+                                 on delete cascade on update cascade,
     season_year             int  not null,
 
     -- planting
@@ -36,11 +40,14 @@ create table if not exists field_seasons (
     planting_method         text,               -- optional
     row_spacing_in          double precision,   -- optional
     planting_notes          text,
+    planting_by             text,
 
     -- harvest (filled in later in the season)
     harvest_date            date,
     yield_lbs_per_acre      double precision,   -- entered directly, not derived
     harvest_notes           text,
+    harvest_by              text,               -- separate from planting_by: the two
+                                                -- halves are often different people
 
     created_at              timestamptz default now(),
     updated_at              timestamptz default now(),
@@ -52,12 +59,14 @@ create table if not exists field_seasons (
 -- grower wants to leave, each with its own date.
 create table if not exists visits (
     id              bigserial primary key,
-    field_id        text not null references fields(field_id) on delete cascade,
+    field_id        text not null references fields(field_id)
+                         on delete cascade on update cascade,
     season_year     int  not null,
     visit_date      date not null,
     growth_stage    text,        -- emergence | vegetative | flowering | pod fill | maturity
     condition_score int,         -- 1 (poor) .. 5 (excellent)
     notes           text,
+    recorded_by     text,
     created_at      timestamptz default now()
 );
 

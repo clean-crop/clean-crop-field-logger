@@ -28,6 +28,23 @@ The field and season year are selected **once above the tabs**, and Planting /
 Visits / Harvest all act on that selection — a grower standing in one spot fills
 everything in without re-picking. Saving a new field makes it active immediately.
 
+## Two roles
+
+Told apart by which passcode was typed at the gate:
+
+- **collector** (`app_passcode`) — the four entry tabs only.
+- **admin** (`admin_passcode`) — also Data (whole dataset + export) and Manage
+  (edit / rename / delete a field).
+
+Configure only `app_passcode` and it grants admin, so a single-passcode setup
+behaves as it did before the split. The guard is `if ROLE == "admin"` around the
+*render calls*, not inside the tabs — a collector's page never contains the data
+at all, rather than merely hiding a tab.
+
+Everyone gives their name at sign-in, stamped onto every row: `recorded_by` on
+fields and visits, and `planting_by` / `harvest_by` on seasons, since those two
+halves are routinely entered by different people on different days.
+
 ## Decisions already made (don't relitigate)
 
 - **Location is lat/lon only.** Nearest town and county were deliberately dropped —
@@ -74,8 +91,10 @@ everything in without re-picking. Saving a new field makes it active immediately
 ## Open
 
 - Not deployed; Supabase not yet configured. See `DEPLOY.md`.
-- **No way to edit or delete a registered field** from inside the app — a typo in
-  a grower name or a bad pin is currently permanent.
+- **Role separation is UI-level only.** Both passcodes reach Supabase through the
+  same anon key, so a collector who extracted it could read everything directly.
+  Fine for four colleagues; not a security boundary. Real separation would need
+  Supabase Auth and per-role RLS policies.
 - Recalling field IDs in the field in 2027 is unsolved beyond the working-field
   picker; deferred deliberately while 2026 collection is the focus.
 - `soil_moisture.parquet` covers only 30 Jun – 31 Jul 2026, bounded by what the

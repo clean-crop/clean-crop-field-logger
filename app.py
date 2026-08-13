@@ -25,32 +25,67 @@ st.set_page_config(page_title="Field Logger — Mung Beans",
 
 
 # ── Passcode gate ──────────────────────────────────────────────────────────
-def _gate():
-    """Block all content until the shared passcode is entered."""
+# Two roles, told apart by which passcode was typed:
+#   collector — the entry tabs only
+#   admin     — also sees the whole dataset, the export, and edit/delete
+# If only `app_passcode` is configured it grants admin, so a single-passcode
+# setup behaves exactly as it did before this split existed.
+def _secret(name):
     try:
-        expected = st.secrets["app_passcode"]
+        return st.secrets[name]
     except (KeyError, FileNotFoundError):
-        return True  # no passcode configured (local dev) — allow through
+        return None
 
-    if st.session_state.get("_authed"):
-        return True
+
+def _gate():
+    """Returns the caller's role, or None while they still need to sign in."""
+    collector_pin = _secret("app_passcode")
+    admin_pin = _secret("admin_passcode")
+
+    if collector_pin is None and admin_pin is None:
+        return "admin"                      # local dev, nothing configured
+
+    if st.session_state.get("_role"):
+        return st.session_state["_role"]
 
     st.title("🌱 Field Logger")
-    st.caption("Enter the passcode to continue.")
-    pin = st.text_input("Passcode", type="password")
-    if st.button("Enter", type="primary"):
-        if pin == expected:
-            st.session_state["_authed"] = True
-            st.rerun()
+    st.caption("Enter the passcode and your name to continue.")
+    pin = st.text_input("Passcode", type="password", key="gate_pin")
+    who = st.text_input("Your name", key="gate_who",
+                        placeholder="So we know who recorded each entry")
+    if st.button("Enter", type="primary", key="gate_go"):
+        if admin_pin is not None and pin == admin_pin:
+            role = "admin"
+        elif collector_pin is not None and pin == collector_pin:
+            role = "collector" if admin_pin is not None else "admin"
         else:
             st.error("Incorrect passcode.")
-    return False
+            return None
+        if not who.strip():
+            st.error("Enter your name — every entry is stamped with who recorded it.")
+            return None
+        st.session_state["_role"] = role
+        st.session_state["_who"] = who.strip()
+        st.rerun()
+    return None
 
 
-if not _gate():
+ROLE = _gate()
+if ROLE is None:
     st.stop()
+WHO = st.session_state.get("_who", "")
 
 st.title("🌱 Mung Bean Field Logger")
+if WHO:
+    st.caption(f"Signed in as **{WHO}**"
+               + (" · reviewer" if ROLE == "admin" else "")
+               + " — [sign out](?signout=1)")
+    if st.query_params.get("signout"):
+        for k in ("_role", "_who"):
+            st.session_state.pop(k, None)
+        st.query_params.clear()
+        st.rerun()
+
 if not db.using_supabase():
     st.warning(
         "**Local storage mode** — saving to CSV on this machine only. "
@@ -85,9 +120,14 @@ if len(fields_df):
 season_year = st.number_input("Season year", 2020, 2100, YEAR_DEFAULT, key="season_year")
 st.divider()
 
-tab_new, tab_plant, tab_visit, tab_harvest, tab_data = st.tabs(
-    ["📍 New Field", "🌱 Planting", "🔍 Visits", "🚜 Harvest", "📋 Data"]
-)
+# The Data tab holds the whole dataset and the export, so collectors don't get
+# it — they see only the tabs they enter through.
+_labels = ["📍 New Field", "🌱 Planting", "🔍 Visits", "🚜 Harvest"]
+if ROLE == "admin":
+    _labels += ["📋 Data", "⚙️ Manage"]
+_tabs = st.tabs(_labels)
+tab_new, tab_plant, tab_visit, tab_harvest = _tabs[:4]
+tab_data, tab_manage = (_tabs[4], _tabs[5]) if ROLE == "admin" else (None, None)
 
 
 def needs_field():
@@ -239,7 +279,7 @@ with tab_new:
             ok, msg = db.insert("fields", dict(
                 field_id=fid, grower_name=grower, farm_name=farm,
                 lat=lat, lon=lon, irrigated=(water == "Irrigated"),
-                notes=nf_notes))
+                notes=nf_notes, recorded_by=WHO))
             if not ok:
                 st.error(msg)
             else:
@@ -312,7 +352,8 @@ with tab_plant:
                     field_id=active_fid, season_year=int(season_year),
                     planting_date=str(pdate), acres=acres, seed_lbs_per_acre=rate,
                     soil_condition_planting=soil, planting_method=method,
-                    row_spacing_in=spacing, planting_notes=notes))
+                    row_spacing_in=spacing, planting_notes=notes,
+                    planting_by=WHO))
                 if ok:
                     st.success("Planting saved.")
                     st.cache_data.clear()
@@ -359,7 +400,8 @@ with tab_visit:
                 ok, msg = db.insert("visits", dict(
                     field_id=active_fid, season_year=int(season_year),
                     visit_date=str(vdate), growth_stage=stage,
-                    condition_score=int(score), notes=vnotes))
+                    condition_score=int(score), notes=vnotes,
+                    recorded_by=WHO))
                 if ok:
                     st.cache_data.clear()
                     # Clear the entry boxes so the next visit starts blank.
@@ -402,7 +444,7 @@ with tab_harvest:
                 ok, msg = db.upsert_season(dict(
                     field_id=active_fid, season_year=int(season_year),
                     harvest_date=str(hdate), yield_lbs_per_acre=yield_pa,
-                    harvest_notes=hnotes))
+                    harvest_notes=hnotes, harvest_by=WHO))
                 if ok:
                     st.success("Harvest saved.")
                     st.cache_data.clear()
@@ -411,7 +453,7 @@ with tab_harvest:
 
 
 # ── Data review / export ───────────────────────────────────────────────────
-with tab_data:
+def render_data():
     st.subheader("Logged data")
     f, s, v = db.read("fields"), db.read("field_seasons"), db.read("visits")
     c1, c2, c3 = st.columns(3)
@@ -422,7 +464,7 @@ with tab_data:
     combined = pd.DataFrame()
     if len(s) and len(f):
         combined = s.merge(f[["field_id", "grower_name", "farm_name", "lat", "lon",
-                              "irrigated"]], on="field_id", how="left")
+                              "irrigated", "recorded_by"]], on="field_id", how="left")
         if "yield_lbs_per_acre" in combined and "acres" in combined:
             combined["total_lbs"] = (combined.yield_lbs_per_acre * combined.acres).round(0)
         st.dataframe(combined, width="stretch", hide_index=True)
@@ -478,3 +520,84 @@ with tab_data:
         )
         st.download_button("⬇️ soil_moisture.csv", sm.to_csv(index=False),
                            "soil_moisture.csv", "text/csv", key="dl_sm")
+
+
+# ── Manage: correct or remove a registered field (reviewer only) ───────────
+def render_manage():
+    st.subheader("Edit or remove a field")
+    if active_fid is None:
+        st.info("No fields registered yet.")
+    else:
+        cur = fields_df[fields_df.field_id == active_fid].iloc[0]
+        st.caption(f"Editing **{active_fid}** — chosen with the working-field "
+                   "picker at the top of the page.")
+
+        e_fid = st.text_input("Field ID", value=str(cur.field_id), key="ed_fid",
+                              help="Renaming carries the planting, visit and harvest "
+                                   "records with it, so the season-over-season link "
+                                   "survives.")
+        c1, c2 = st.columns(2)
+        e_grower = c1.text_input("Grower name", value=str(cur.grower_name), key="ed_grower")
+        e_farm = c2.text_input("Farm name",
+                               value="" if pd.isna(cur.farm_name) else str(cur.farm_name),
+                               key="ed_farm")
+        c3, c4 = st.columns(2)
+        e_lat = c3.number_input("Latitude", value=float(cur.lat), format="%.6f", key="ed_lat")
+        e_lon = c4.number_input("Longitude", value=float(cur.lon), format="%.6f", key="ed_lon")
+        e_water = st.radio("Water", ["Dryland", "Irrigated"],
+                           index=1 if bool(cur.irrigated) else 0,
+                           horizontal=True, key="ed_water")
+        e_notes = st.text_area("Notes",
+                               value="" if pd.isna(cur.notes) else str(cur.notes),
+                               key="ed_notes")
+
+        if st.button("Save changes", type="primary", key="ed_save"):
+            clash = (e_fid != active_fid and len(fields_df)
+                     and e_fid in set(fields_df.field_id.astype(str)))
+            if not (e_fid and e_grower):
+                st.error("Field ID and grower name can't be blank.")
+            elif clash:
+                st.error(f"Field ID '{e_fid}' is already taken.")
+            else:
+                ok, msg = db.update_field(active_fid, dict(
+                    field_id=e_fid, grower_name=e_grower, farm_name=e_farm,
+                    lat=e_lat, lon=e_lon, irrigated=(e_water == "Irrigated"),
+                    notes=e_notes))
+                if ok:
+                    st.cache_data.clear()
+                    st.session_state["active_fid"] = e_fid
+                    st.session_state.pop("field_picker", None)
+                    st.success(f"Saved. {'Renamed to ' + e_fid + '.' if e_fid != active_fid else ''}")
+                    st.rerun()
+                else:
+                    st.error(msg)
+
+        st.divider()
+        st.markdown("**Delete this field**")
+        seasons_n = len(db.read("field_seasons").query("field_id == @active_fid")) \
+            if len(db.read("field_seasons")) else 0
+        visits_n = len(db.read("visits").query("field_id == @active_fid")) \
+            if len(db.read("visits")) else 0
+        st.warning(f"Deleting **{active_fid}** also removes **{seasons_n} season "
+                   f"record(s)** and **{visits_n} visit(s)**. This cannot be undone.")
+        confirm = st.text_input(f"Type {active_fid} to confirm", key="del_confirm")
+        if st.button("Delete field", key="del_go", disabled=confirm != active_fid):
+            ok, msg, counts = db.delete_field(active_fid)
+            if ok:
+                st.cache_data.clear()
+                for k in ("active_fid", "field_picker", "del_confirm"):
+                    st.session_state.pop(k, None)
+                st.success(f"{msg} Removed {counts['field_seasons']} season record(s) "
+                           f"and {counts['visits']} visit(s).")
+                st.rerun()
+            else:
+                st.error(msg)
+
+
+# Rendered only for the reviewer. Guarding here rather than inside the tab keeps
+# the whole dataset out of a collector's page, not merely out of their tab strip.
+if ROLE == "admin":
+    with tab_data:
+        render_data()
+    with tab_manage:
+        render_manage()

@@ -19,14 +19,14 @@ LOCAL_DIR.mkdir(exist_ok=True)
 TABLES = ("fields", "field_seasons", "visits")
 
 FIELD_COLS = ["field_id", "grower_name", "farm_name",
-              "lat", "lon", "irrigated", "notes"]
+              "lat", "lon", "irrigated", "notes", "recorded_by"]
 SEASON_COLS = ["field_id", "season_year",
                "planting_date", "acres", "seed_lbs_per_acre",
                "soil_condition_planting", "planting_method", "row_spacing_in",
-               "planting_notes",
-               "harvest_date", "yield_lbs_per_acre", "harvest_notes"]
+               "planting_notes", "planting_by",
+               "harvest_date", "yield_lbs_per_acre", "harvest_notes", "harvest_by"]
 VISIT_COLS = ["field_id", "season_year", "visit_date", "growth_stage",
-              "condition_score", "notes"]
+              "condition_score", "notes", "recorded_by"]
 
 _COLS = {"fields": FIELD_COLS, "field_seasons": SEASON_COLS, "visits": VISIT_COLS}
 
@@ -143,6 +143,75 @@ def upsert_season(record: dict):
 
     _write_csv("field_seasons", df)
     return True, "Saved locally."
+
+
+def update_field(field_id: str, changes: dict):
+    """
+    Edit a registered field in place. `changes` may include a new `field_id`;
+    the rename is propagated to field_seasons and visits so the season-over-season
+    link survives — that link is the entire point of the tool.
+    """
+    changes = {k: v for k, v in changes.items() if k in FIELD_COLS}
+    new_id = changes.get("field_id", field_id)
+
+    cli = _client()
+    if cli is not None:
+        try:
+            # The FKs are declared `on update cascade`, so Postgres carries the
+            # rename into the child tables by itself.
+            cli.table("fields").update(changes).eq("field_id", field_id).execute()
+            return True, "Saved."
+        except Exception as e:
+            return False, f"Update failed: {e}"
+
+    fields = read("fields")
+    if not len(fields) or field_id not in set(fields.field_id.astype(str)):
+        return False, f"No field '{field_id}'."
+    # Column by column, widening dtype first: a column nobody has filled in reads
+    # back as all-NaN float64, and writing a string into it raises in new pandas.
+    mask = fields.field_id == field_id
+    for col, val in changes.items():
+        if col not in fields.columns:
+            fields[col] = None
+        if isinstance(val, str) and fields[col].dtype != object:
+            fields[col] = fields[col].astype(object)
+        fields.loc[mask, col] = val
+    _write_csv("fields", fields)
+
+    if new_id != field_id:                       # hand-rolled cascade for the CSVs
+        for t in ("field_seasons", "visits"):
+            d = read(t)
+            if len(d):
+                d.loc[d.field_id == field_id, "field_id"] = new_id
+                _write_csv(t, d)
+    return True, "Saved locally."
+
+
+def delete_field(field_id: str):
+    """
+    Remove a field and everything recorded against it. Destructive and not
+    undoable — the caller is responsible for confirming first.
+    Returns (ok, message, counts_removed).
+    """
+    counts = {}
+    for t in ("field_seasons", "visits"):
+        d = read(t)
+        counts[t] = int((d.field_id == field_id).sum()) if len(d) else 0
+
+    cli = _client()
+    if cli is not None:
+        try:
+            # `on delete cascade` clears the child rows with it.
+            cli.table("fields").delete().eq("field_id", field_id).execute()
+            return True, f"Deleted {field_id}.", counts
+        except Exception as e:
+            return False, f"Delete failed: {e}", counts
+
+    for t in ("field_seasons", "visits", "fields"):
+        d = read(t)
+        if len(d):
+            _write_csv(t, d[d.field_id != field_id])
+    return True, f"Deleted {field_id}.", counts
 
 
 def suggest_field_id(grower_name: str, existing: pd.DataFrame) -> str:

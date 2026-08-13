@@ -19,7 +19,8 @@ Free tier is far more than four users need.
    - **Project URL** → `supabase_url`
    - **anon / public** key → `supabase_key`
 4. Locally: copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml`
-   and paste them in. That file is gitignored — it must never be committed.
+   and paste them in, along with the two passcodes (see step 3). That file is
+   gitignored — it must never be committed.
 
 Restart the app. The orange "Local storage mode" banner disappears when it is
 talking to Supabase; that banner is the check that this worked.
@@ -72,9 +73,24 @@ No sleeping, no disk wipe, no one-private-app cap.
 
 ## 3. Giving it to the four users
 
-Send them the URL and the `app_passcode`. Nothing to install — it is a web page
-they can add to the phone home screen (Safari: Share → Add to Home Screen) so it
-opens like an app.
+There are two passcodes, and which one someone types decides what they see:
+
+| Passcode | Who | Gets |
+|---|---|---|
+| `app_passcode` | the people collecting | New Field, Planting, Visits, Harvest |
+| `admin_passcode` | you | the above, plus Data (export) and Manage (edit/delete) |
+
+**Send the collectors `app_passcode` only.** Keep `admin_passcode` to yourself.
+Everyone types their name at sign-in, and it is stamped on every row they enter.
+
+Nothing to install — it is a web page they can add to the phone home screen
+(Safari: Share → Add to Home Screen) so it opens like an app.
+
+Worth being clear-eyed about: this split is a **UI convenience, not a security
+boundary.** Both passcodes talk to Supabase with the same anon key, so someone
+determined who pulled that key out of the page could read the tables directly.
+That is an acceptable trade for four colleagues logging agronomic data — but do
+not put anything genuinely sensitive in here on the strength of it.
 
 ---
 
