@@ -14,6 +14,7 @@ Gated by a shared passcode (set `app_passcode` in Streamlit secrets).
 
 import datetime as dt
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
@@ -94,8 +95,18 @@ if not db.using_supabase():
         icon="⚠️",
     )
 
+# Dates come from Oklahoma's clock, not the server's. Streamlit Cloud runs in
+# UTC, where "today" rolls over at 7pm local — so an evening entry after a day in
+# the field would silently pre-fill tomorrow.
+FARM_TZ = ZoneInfo("America/Chicago")
+
+
+def today():
+    return dt.datetime.now(FARM_TZ).date()
+
+
 fields_df = db.read("fields")
-YEAR_DEFAULT = dt.date.today().year
+YEAR_DEFAULT = today().year
 MAP_HOME = (36.0, -98.0)   # where the map opens before a field is pinned (NW Oklahoma)
 
 
@@ -311,7 +322,7 @@ with tab_plant:
 
         pdate = st.date_input("Planting date *",
                               value=pd.to_datetime(prior(row, "planting_date")).date()
-                              if prior(row, "planting_date") else dt.date.today(),
+                              if prior(row, "planting_date") else today(),
                               key="pl_date")
         c1, c2 = st.columns(2)
         acres = c1.number_input("Acres planted *", 0.0, value=prior(row, "acres"),
@@ -384,7 +395,7 @@ with tab_visit:
             st.caption("No visits logged for this field-year yet.")
 
         st.markdown("**Add a visit**")
-        vdate = st.date_input("Visit date *", value=dt.date.today(), key="v_date")
+        vdate = st.date_input("Visit date *", value=today(), key="v_date")
         stage = st.selectbox("Growth stage",
                              ["", "emergence", "vegetative", "flowering",
                               "pod fill", "maturity"], key="v_stage")
@@ -426,7 +437,7 @@ with tab_harvest:
 
         hdate = st.date_input("Harvest date",
                               value=pd.to_datetime(prior(row, "harvest_date")).date()
-                              if prior(row, "harvest_date") else dt.date.today(),
+                              if prior(row, "harvest_date") else today(),
                               key="h_date")
         yield_pa = st.number_input("Harvested (lbs/acre) *", 0.0,
                                    value=prior(row, "yield_lbs_per_acre"),

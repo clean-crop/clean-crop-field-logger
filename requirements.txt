@@ -8,3 +8,4 @@ supabase>=2.15
 folium>=0.19
 streamlit-folium>=0.24
 pyarrow>=17
+tzdata>=2024.1   # zoneinfo needs a tz database on slim Linux images
