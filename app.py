@@ -208,16 +208,28 @@ with tab_new:
         fmap = folium.Map(location=[lat, lon] if has_pin else list(MAP_HOME),
                           zoom_start=16 if has_pin else 8,
                           tiles="Esri.WorldImagery", attr="Esri")
-        # "Find me" button — centres the map on the phone's GPS. Requires HTTPS:
-        # browsers block geolocation on insecure origins, so this does nothing on
-        # a plain-http LAN address and only works once the app is deployed.
-        LocateControl(auto_start=True, flyTo=True,
+        # "Find me" button — centres the map on the phone's GPS.
+        #
+        # auto_start is deliberately off. Firing geolocation on page load means the
+        # request arrives with no user gesture behind it, and iOS Safari answers
+        # that by denying outright — no permission prompt, just "user denied
+        # geolocation" before anyone has touched the screen. Waiting for the tap
+        # gives the request a gesture to hang on, which is what gets the prompt.
+        #
+        # Also needs HTTPS either way: browsers block geolocation on insecure
+        # origins, so this stays dead on a plain-http LAN address.
+        LocateControl(auto_start=False, flyTo=True, keepCurrentZoomLevel=False,
                       strings={"title": "Find my location"}).add_to(fmap)
         if has_pin:
             folium.Marker([lat, lon], tooltip="This field").add_to(fmap)
 
-        st.caption("Tap **Find my location** (the ⌖ button), then tap the map where "
-                   "you're standing to drop the pin.")
+        # Describe the button by what it looks like and where it sits. It renders as
+        # a small pin icon under the zoom controls, which is easy to miss and easy
+        # to mistake for decoration.
+        st.caption("To use your location, tap the **pin button just below the + and − "
+                   "buttons** on the map, and allow location access when asked. Then "
+                   "tap the map to place the pin. If location doesn't work, type the "
+                   "coordinates below instead — that works just as well.")
         clicked = st_folium(fmap, height=340, width=None,
                             returned_objects=["last_clicked"], key="nf_map")
         if clicked and clicked.get("last_clicked"):
