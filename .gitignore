@@ -6,3 +6,6 @@ local_data/
 
 # machine-local Claude Code permissions
 .claude/settings.local.json
+
+# raw ERA5 downloads — only the built parquet is committed
+era5_cache/
