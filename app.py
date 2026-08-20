@@ -128,6 +128,86 @@ if len(fields_df):
     active_fid = opts[chosen]
     st.session_state["active_fid"] = active_fid
 
+def metres_between(lat1, lon1, lat2, lon2):
+    """Great-circle distance in metres."""
+    from math import radians, sin, cos, asin, sqrt
+    dlat, dlon = radians(lat2 - lat1), radians(lon2 - lon1)
+    a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2) ** 2
+    return 2 * 6371000 * asin(sqrt(a))
+
+
+def render_field_finder():
+    """
+    Which of these fields am I standing in? The field IDs are deliberately
+    arbitrary, so the only thing that answers this is the coordinates — and
+    until now the map of registered fields lived on the Data tab, which a
+    collector cannot see.
+    """
+    located = fields_df.dropna(subset=["lat", "lon"])
+    if not len(located):
+        st.caption("No fields have coordinates yet.")
+        return
+
+    st.caption("Tap the **pin button** on the map to find yourself, then tap the map "
+               "at your position — the closest registered fields are listed below it.")
+    try:
+        import folium
+        from folium.plugins import LocateControl
+        from streamlit_folium import st_folium
+
+        fmap = folium.Map(location=[located.lat.mean(), located.lon.mean()],
+                          zoom_start=11, tiles="Esri.WorldImagery", attr="Esri")
+        LocateControl(auto_start=False, flyTo=True,
+                      strings={"title": "Find my location"}).add_to(fmap)
+        for r in located.itertuples():
+            folium.CircleMarker(
+                [r.lat, r.lon], radius=7, color="#ffffff", weight=2,
+                fill=True, fill_color="#e8590c", fill_opacity=0.9,
+                tooltip=f"{r.field_id} — {r.grower_name}").add_to(fmap)
+            # A permanent label, not a hover tooltip: on a phone there is no hover,
+            # and the whole point is to read the ID at a glance.
+            folium.Marker(
+                [r.lat, r.lon],
+                icon=folium.DivIcon(html=(
+                    '<div style="font:600 11px/1.1 sans-serif;color:#fff;'
+                    'text-shadow:0 0 3px #000,0 0 3px #000;white-space:nowrap;'
+                    f'transform:translate(10px,-6px)">{r.field_id}</div>'))
+            ).add_to(fmap)
+
+        tapped = st_folium(fmap, height=320, width=None,
+                           returned_objects=["last_clicked"], key="find_map")
+        if tapped and tapped.get("last_clicked"):
+            here = (tapped["last_clicked"]["lat"], tapped["last_clicked"]["lng"])
+            d = located.assign(m=[metres_between(*here, r.lat, r.lon)
+                                  for r in located.itertuples()]).nsmallest(3, "m")
+            st.markdown("**Closest fields to that point**")
+            for r in d.itertuples():
+                away = f"{r.m:,.0f} m" if r.m < 1000 else f"{r.m/1609.34:,.1f} miles"
+                is_active = r.field_id == active_fid
+                c1, c2 = st.columns([3, 1])
+                c1.markdown(f"**{r.field_id}** — {r.grower_name}  \n"
+                            f"<span style='color:#888'>{away} away"
+                            + (" · currently selected" if is_active else "") + "</span>",
+                            unsafe_allow_html=True)
+                if not is_active:
+                    if c2.button("Use this", key=f"use_{r.field_id}"):
+                        st.session_state["active_fid"] = r.field_id
+                        st.session_state.pop("field_picker", None)
+                        st.rerun()
+            nearest = d.iloc[0]
+            if nearest.m > 1609:
+                st.warning("The closest registered field is over a mile away. If you "
+                           "are standing in a field, it may not be registered yet — "
+                           "add it on the **New Field** tab rather than logging "
+                           "against the wrong one.")
+    except Exception as e:
+        st.caption(f"Map unavailable ({e}).")
+
+
+if active_fid is not None:
+    with st.expander("Which field am I in?"):
+        render_field_finder()
+
 season_year = st.number_input("Season year", 2020, 2100, YEAR_DEFAULT, key="season_year")
 st.divider()
 

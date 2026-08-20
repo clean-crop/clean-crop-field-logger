@@ -28,6 +28,13 @@ The field and season year are selected **once above the tabs**, and Planting /
 Visits / Harvest all act on that selection — a grower standing in one spot fills
 everything in without re-picking. Saving a new field makes it active immediately.
 
+**"Which field am I in?"** sits beside that picker, open to every role. Field IDs
+are arbitrary by design, so coordinates are the only thing that answers the
+question a year later — and the map of registered fields lives on the Data tab,
+which a collector cannot see. It shows every field as a labelled pin, locates the
+phone, and ranks the closest by distance. If the nearest is over a mile off it
+says so, rather than letting someone log against the wrong field.
+
 ## Two roles
 
 Told apart by which passcode was typed at the gate:
@@ -123,9 +130,9 @@ halves are routinely entered by different people on different days.
   it is not: a database-level boundary. Anyone who obtains the key by other means
   bypasses the passcode entirely, because RLS grants `anon` full access to all
   three tables. Real separation would need Supabase Auth and per-role policies.
-- Recalling field IDs in the field in 2027 is unsolved beyond the working-field
-  picker; deferred deliberately while 2026 collection is the focus.
-- `soil_moisture.parquet` covers only 30 Jun – 31 Jul 2026, bounded by what the
-  monitoring project fetches.
+- `soil_moisture.parquet` runs 1 Jun – 31 Oct by design, to cover a second
+  planting, but only as far as ERA5 has published (5–7 day lag). Re-run
+  `build_soil_moisture.py` through the season; it fetches what is missing,
+  including Sep/Oct baseline years once the season reaches them.
 
 Run locally: `streamlit run app.py --server.port 8505`
