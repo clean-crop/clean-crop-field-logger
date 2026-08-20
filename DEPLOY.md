@@ -37,13 +37,14 @@ HTTPS is not cosmetic here. Browsers block geolocation on insecure origins, so
 **the "Find my location" button cannot work until the app is served over HTTPS.**
 `localhost` is exempt, which is why it works on the dev machine and nowhere else.
 
-### GitHub first
+### GitHub
 
-Streamlit Cloud deploys from a repo, so the code has to be pushed:
-
-```bash
-gh repo create clean-crop-field-logger --private --source=. --remote=origin --push
-```
+The code lives at **clean-crop/clean-crop-field-logger**, in the org alongside
+the soil monitor. It is **public**, which is not an oversight: Community Cloud's
+free tier allows one private app per account, and that slot is taken in both the
+personal and the Clean Crop accounts. A public app is public only in the sense
+that a stranger reaches the passcode screen — the data behind it stays gated and
+the Supabase key never leaves the server.
 
 ### Streamlit Community Cloud
 
