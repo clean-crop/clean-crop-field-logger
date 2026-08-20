@@ -87,10 +87,36 @@ halves are routinely entered by different people on different days.
   ERA5-Land was tested there and is worse, not finer. Publication lag is 5–7 days.
 - **Building a DataFrame from Series with a different index** silently produces
   all-NaN (an empty chart). Pass `.values` when supplying your own index.
+- **PostgREST sends whole numbers as `500`, not `500.0`**, so pandas types the
+  column int64 — and `st.number_input` refuses an int value against a float step.
+  Cast numeric prefills with `prior_num`. Local fixtures hide this, because
+  `set_value` hands over real floats.
+- **An all-null column reads back as object dtype**, so arithmetic on it cannot be
+  rounded. `pd.to_numeric(..., errors="coerce")` before any maths on a column that
+  is empty until harvest.
+- **Geolocation must be requested on a tap, not on page load.** A gestureless
+  request gets denied outright with no permission prompt, which surfaces as
+  "user denied geolocation" before the user has touched anything.
+- **Checking the deployed app with a bare `curl` is misleading.** Streamlit's
+  session handshake 303s in a loop without a cookie jar, which looks exactly like
+  an auth wall or a dead container. Use `-c/-b` before concluding anything.
+
+## Live
+
+- **App:** <https://mungbeanlog.streamlit.app> — Streamlit Community Cloud, public
+  (the one free private slot is taken), gated by passcode. Deploys from `main` on
+  push, though the auto-deploy hook was flaky after the repo moved orgs; a manual
+  **Reboot app** forces a pull.
+- **Repo:** `clean-crop/clean-crop-field-logger`, public. `soil_moisture.parquet`
+  is committed on purpose so a cold start renders without CDS credentials.
+- **Database:** Supabase, schema and RLS applied. A GitHub Action pings all three
+  tables every 3 days, because the free tier pauses a project after 7 days idle
+  and a quiet week mid-season is normal.
+- Verified end to end on a third party's phone and desktop: public access, both
+  passcodes, GPS over HTTPS.
 
 ## Open
 
-- Not deployed; Supabase not yet configured. See `DEPLOY.md`.
 - **Role separation is enforced in app code, not in the database.** Streamlit runs
   server-side and never ships `st.secrets` to the browser, so a collector cannot
   extract the anon key from the page — the split holds against ordinary use. What
