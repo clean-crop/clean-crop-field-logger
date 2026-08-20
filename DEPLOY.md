@@ -87,6 +87,22 @@ Everyone types their name at sign-in, and it is stamped on every row they enter.
 Nothing to install — it is a web page they can add to the phone home screen
 (Safari: Share → Add to Home Screen) so it opens like an app.
 
+Tell them three things, or they will report bugs that are not bugs:
+
+1. **First load can take ~30 seconds** if the app has been idle. Community Cloud
+   sleeps inactive apps and wakes them on visit. It looks broken. It is not.
+2. **It needs cell signal.** Streamlit holds a live connection to the server;
+   there is no offline mode. Worth confirming coverage in the actual fields.
+3. **Save each section before moving on.** Form state lives server-side, so a
+   dropped connection loses anything not yet saved.
+
+**The location button needs browser permission**, and says nothing useful when it
+lacks it — just "user denied geolocation". On iPhone: Settings → Privacy &
+Security → Location Services (on), then Settings → *browser* → Location → While
+Using the App. Chrome and Safari are granted separately. The app has this under
+"Location button not working?" on the New Field tab, but it is the most likely
+first support call, so say it up front.
+
 How solid is that split? Reasonably. Streamlit runs Python on the server and
 sends the browser only the rendered page, so the Supabase key stays server-side
 and a collector cannot pull it out of the page to query the tables directly.

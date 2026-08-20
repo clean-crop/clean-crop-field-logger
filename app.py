@@ -230,6 +230,18 @@ with tab_new:
                    "buttons** on the map, and allow location access when asked. Then "
                    "tap the map to place the pin. If location doesn't work, type the "
                    "coordinates below instead — that works just as well.")
+        with st.expander("Location button not working?"):
+            st.markdown(
+                "Your browser needs permission before the map can find you, and it "
+                "says nothing useful when it doesn't have it.\n\n"
+                "**iPhone:** Settings → Privacy & Security → Location Services (on), "
+                "then Settings → *your browser* → Location → **While Using the App**. "
+                "Chrome and Safari are granted separately — allowing one does nothing "
+                "for the other.\n\n"
+                "**Android:** Settings → Apps → *your browser* → Permissions → "
+                "Location → **Allow**.\n\n"
+                "Then reload this page and tap the pin button again. Or skip it and "
+                "type the coordinates — that is just as accurate.")
         clicked = st_folium(fmap, height=340, width=None,
                             returned_objects=["last_clicked"], key="nf_map")
         if clicked and clicked.get("last_clicked"):
