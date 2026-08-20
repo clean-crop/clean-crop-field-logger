@@ -131,14 +131,19 @@ if len(fields_df):
 season_year = st.number_input("Season year", 2020, 2100, YEAR_DEFAULT, key="season_year")
 st.divider()
 
-# The Data tab holds the whole dataset and the export, so collectors don't get
-# it — they see only the tabs they enter through.
+# Everyone can correct what they entered, so Manage is shown to all. The Data tab
+# is the whole dataset and the export, so that stays with the reviewer.
 _labels = ["📍 New Field", "🌱 Planting", "🔍 Visits", "🚜 Harvest"]
 if ROLE == "admin":
-    _labels += ["📋 Data", "⚙️ Manage"]
-_tabs = st.tabs(_labels)
-tab_new, tab_plant, tab_visit, tab_harvest = _tabs[:4]
-tab_data, tab_manage = (_tabs[4], _tabs[5]) if ROLE == "admin" else (None, None)
+    _labels.append("📋 Data")
+_labels.append("✏️ Fix")
+_tabs = dict(zip(_labels, st.tabs(_labels)))
+tab_new = _tabs["📍 New Field"]
+tab_plant = _tabs["🌱 Planting"]
+tab_visit = _tabs["🔍 Visits"]
+tab_harvest = _tabs["🚜 Harvest"]
+tab_manage = _tabs["✏️ Fix"]
+tab_data = _tabs.get("📋 Data")
 
 
 def needs_field():
@@ -382,23 +387,68 @@ with tab_visit:
         mine = visits[(visits.field_id == active_fid) &
                       (visits.season_year == int(season_year))] if len(visits) else pd.DataFrame()
 
+        STAGES = ["", "emergence", "vegetative", "flowering", "pod fill", "maturity"]
+
         if len(mine):
             st.markdown(f"**{len(mine)} visit(s) logged this season**")
             for r in mine.sort_values("visit_date", ascending=False).itertuples():
                 stage = f" · {r.growth_stage}" if pd.notna(r.growth_stage) and r.growth_stage else ""
                 score = f" · condition {int(r.condition_score)}/5" if pd.notna(r.condition_score) else ""
+                by = f" · {r.recorded_by}" if pd.notna(getattr(r, "recorded_by", None)) \
+                    and getattr(r, "recorded_by", "") else ""
                 with st.container(border=True):
-                    st.markdown(f"**{r.visit_date}**{stage}{score}")
+                    st.markdown(f"**{r.visit_date}**{stage}{score}{by}")
                     if pd.notna(r.notes) and r.notes:
                         st.write(r.notes)
+
+                    # Anyone can correct a visit they logged — a mistyped note is
+                    # otherwise permanent, since visits only ever got appended.
+                    vid = getattr(r, "id", None)
+                    if vid is None or pd.isna(vid):
+                        st.caption("This visit predates edit support and can't be changed.")
+                        continue
+                    vid = int(vid)
+                    with st.expander("Fix this visit"):
+                        e_date = st.date_input(
+                            "Visit date", value=pd.to_datetime(r.visit_date).date(),
+                            key=f"ev_date_{vid}")
+                        cur_stage = r.growth_stage if pd.notna(r.growth_stage) else ""
+                        e_stage = st.selectbox(
+                            "Growth stage", STAGES,
+                            index=STAGES.index(cur_stage) if cur_stage in STAGES else 0,
+                            key=f"ev_stage_{vid}")
+                        e_score = st.slider(
+                            "Crop condition", 1, 5,
+                            int(r.condition_score) if pd.notna(r.condition_score) else 3,
+                            key=f"ev_score_{vid}")
+                        e_notes = st.text_area(
+                            "Observations", value=r.notes if pd.notna(r.notes) else "",
+                            key=f"ev_notes_{vid}")
+
+                        b1, b2 = st.columns(2)
+                        if b1.button("Save changes", key=f"ev_save_{vid}",
+                                     type="primary"):
+                            ok, msg = db.update_row("visits", vid, dict(
+                                visit_date=str(e_date), growth_stage=e_stage,
+                                condition_score=int(e_score), notes=e_notes))
+                            if ok:
+                                st.cache_data.clear()
+                                st.rerun()
+                            else:
+                                st.error(msg)
+                        if b2.button("Delete this visit", key=f"ev_del_{vid}"):
+                            ok, msg = db.delete_row("visits", vid)
+                            if ok:
+                                st.cache_data.clear()
+                                st.rerun()
+                            else:
+                                st.error(msg)
         else:
             st.caption("No visits logged for this field-year yet.")
 
         st.markdown("**Add a visit**")
         vdate = st.date_input("Visit date *", value=today(), key="v_date")
-        stage = st.selectbox("Growth stage",
-                             ["", "emergence", "vegetative", "flowering",
-                              "pod fill", "maturity"], key="v_stage")
+        stage = st.selectbox("Growth stage", STAGES, key="v_stage")
         score = st.slider("Crop condition (1 poor → 5 excellent)", 1, 5, 3, key="v_score")
         vnotes = st.text_area("Observations", key="v_notes",
                               placeholder="Stand quality, weed pressure, moisture stress…")
@@ -584,31 +634,38 @@ def render_manage():
                     st.error(msg)
 
         st.divider()
-        st.markdown("**Delete this field**")
-        seasons_n = len(db.read("field_seasons").query("field_id == @active_fid")) \
-            if len(db.read("field_seasons")) else 0
-        visits_n = len(db.read("visits").query("field_id == @active_fid")) \
-            if len(db.read("visits")) else 0
-        st.warning(f"Deleting **{active_fid}** also removes **{seasons_n} season "
-                   f"record(s)** and **{visits_n} visit(s)**. This cannot be undone.")
-        confirm = st.text_input(f"Type {active_fid} to confirm", key="del_confirm")
-        if st.button("Delete field", key="del_go", disabled=confirm != active_fid):
-            ok, msg, counts = db.delete_field(active_fid)
-            if ok:
-                st.cache_data.clear()
-                for k in ("active_fid", "field_picker", "del_confirm"):
-                    st.session_state.pop(k, None)
-                st.success(f"{msg} Removed {counts['field_seasons']} season record(s) "
-                           f"and {counts['visits']} visit(s).")
-                st.rerun()
-            else:
-                st.error(msg)
+        # Correcting a typo and destroying a season of data are different acts, so
+        # only the reviewer gets the second one.
+        if ROLE != "admin":
+            st.caption("Need a field removed altogether? Ask Sarah — deleting a field "
+                       "also deletes every planting, visit and harvest recorded "
+                       "against it, so that stays with one person.")
+        else:
+            st.markdown("**Delete this field**")
+            seasons_n = len(db.read("field_seasons").query("field_id == @active_fid")) \
+                if len(db.read("field_seasons")) else 0
+            visits_n = len(db.read("visits").query("field_id == @active_fid")) \
+                if len(db.read("visits")) else 0
+            st.warning(f"Deleting **{active_fid}** also removes **{seasons_n} season "
+                       f"record(s)** and **{visits_n} visit(s)**. This cannot be undone.")
+            confirm = st.text_input(f"Type {active_fid} to confirm", key="del_confirm")
+            if st.button("Delete field", key="del_go", disabled=confirm != active_fid):
+                ok, msg, counts = db.delete_field(active_fid)
+                if ok:
+                    st.cache_data.clear()
+                    for k in ("active_fid", "field_picker", "del_confirm"):
+                        st.session_state.pop(k, None)
+                    st.success(f"{msg} Removed {counts['field_seasons']} season record(s) "
+                               f"and {counts['visits']} visit(s).")
+                    st.rerun()
+                else:
+                    st.error(msg)
 
 
-# Rendered only for the reviewer. Guarding here rather than inside the tab keeps
-# the whole dataset out of a collector's page, not merely out of their tab strip.
-if ROLE == "admin":
+# The dataset is guarded here rather than inside the tab, so a collector's page
+# never contains it — not merely hides the tab. Fixing is open to everyone.
+if ROLE == "admin" and tab_data is not None:
     with tab_data:
         render_data()
-    with tab_manage:
-        render_manage()
+with tab_manage:
+    render_manage()

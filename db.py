@@ -25,7 +25,7 @@ SEASON_COLS = ["field_id", "season_year",
                "soil_condition_planting", "planting_method", "row_spacing_in",
                "planting_notes", "planting_by",
                "harvest_date", "yield_lbs_per_acre", "harvest_notes", "harvest_by"]
-VISIT_COLS = ["field_id", "season_year", "visit_date", "growth_stage",
+VISIT_COLS = ["id", "field_id", "season_year", "visit_date", "growth_stage",
               "condition_score", "notes", "recorded_by"]
 
 _COLS = {"fields": FIELD_COLS, "field_seasons": SEASON_COLS, "visits": VISIT_COLS}
@@ -94,10 +94,62 @@ def insert(table: str, record: dict):
         except Exception as e:
             return False, f"Save failed: {e}"
     df = read(table)
+    # Postgres hands out `id` itself; the CSV fallback has to mint one, so that a
+    # single row can still be addressed later for editing.
+    if "id" in _COLS[table] and "id" not in record:
+        used = pd.to_numeric(df["id"], errors="coerce") if "id" in df else pd.Series(dtype=float)
+        record = {"id": int(used.max()) + 1 if used.notna().any() else 1, **record}
     new = pd.DataFrame([record])
     df = pd.concat([df, new], ignore_index=True) if len(df) else new
     _write_csv(table, df)
     return True, "Saved locally."
+
+
+def update_row(table: str, row_id, changes: dict):
+    """Edit one row addressed by its `id`. Returns (ok, message)."""
+    assert table in TABLES, table
+    changes = {k: v for k, v in changes.items() if k in _COLS[table] and k != "id"}
+    cli = _client()
+    if cli is not None:
+        try:
+            cli.table(table).update(changes).eq("id", row_id).execute()
+            return True, "Saved."
+        except Exception as e:
+            return False, f"Update failed: {e}"
+
+    df = read(table)
+    if not len(df) or "id" not in df:
+        return False, "Nothing to update."
+    mask = pd.to_numeric(df["id"], errors="coerce") == float(row_id)
+    if not mask.any():
+        return False, f"No row with id {row_id}."
+    for col, val in changes.items():
+        if col not in df.columns:
+            df[col] = None
+        if isinstance(val, str) and df[col].dtype != object:
+            df[col] = df[col].astype(object)
+        df.loc[mask, col] = val
+    _write_csv(table, df)
+    return True, "Saved locally."
+
+
+def delete_row(table: str, row_id):
+    """Remove one row addressed by its `id`. Returns (ok, message)."""
+    assert table in TABLES, table
+    cli = _client()
+    if cli is not None:
+        try:
+            cli.table(table).delete().eq("id", row_id).execute()
+            return True, "Deleted."
+        except Exception as e:
+            return False, f"Delete failed: {e}"
+
+    df = read(table)
+    if not len(df) or "id" not in df:
+        return False, "Nothing to delete."
+    keep = pd.to_numeric(df["id"], errors="coerce") != float(row_id)
+    _write_csv(table, df[keep])
+    return True, "Deleted locally."
 
 
 def upsert_season(record: dict):
