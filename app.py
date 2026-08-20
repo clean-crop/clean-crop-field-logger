@@ -170,6 +170,17 @@ def prior(row, col):
     return row[col]
 
 
+def prior_num(row, col):
+    """
+    Saved value as a float. PostgREST sends a whole number as JSON `500`, so
+    pandas types the column int64 — and st.number_input rejects an int value
+    against a float step. Every acreage is a whole number, so this is the
+    common case, not the edge case.
+    """
+    v = prior(row, col)
+    return None if v is None else float(v)
+
+
 # ── New Field: register a physical field once, reuse forever ───────────────
 with tab_new:
     st.subheader("Register a new field")
@@ -330,10 +341,10 @@ with tab_plant:
                               if prior(row, "planting_date") else today(),
                               key="pl_date")
         c1, c2 = st.columns(2)
-        acres = c1.number_input("Acres planted *", 0.0, value=prior(row, "acres"),
+        acres = c1.number_input("Acres planted *", 0.0, value=prior_num(row, "acres"),
                                 step=10.0, key="pl_ac")
         rate = c2.number_input("Seed planted (lbs/acre) *", 0.0,
-                               value=prior(row, "seed_lbs_per_acre"),
+                               value=prior_num(row, "seed_lbs_per_acre"),
                                step=1.0, key="pl_rate")
         if acres and rate:
             st.caption(f"→ Total seed: **{acres * rate:,.0f} lbs** over {acres:,.0f} acres")
@@ -354,7 +365,7 @@ with tab_plant:
                               index=m_opts.index(m_prior) if m_prior in m_opts else None,
                               horizontal=True, key="pl_method")
             spacing = st.number_input("Row spacing (in)", 0.0,
-                                      value=prior(row, "row_spacing_in"),
+                                      value=prior_num(row, "row_spacing_in"),
                                       step=1.0, key="pl_sp")
 
         notes = st.text_area("Planting notes", value=prior(row, "planting_notes") or "",
@@ -490,7 +501,7 @@ with tab_harvest:
                               if prior(row, "harvest_date") else today(),
                               key="h_date")
         yield_pa = st.number_input("Harvested (lbs/acre) *", 0.0,
-                                   value=prior(row, "yield_lbs_per_acre"),
+                                   value=prior_num(row, "yield_lbs_per_acre"),
                                    step=10.0, key="h_yield")
         if yield_pa and acres_known:
             st.success(f"→ Total: **{yield_pa * acres_known:,.0f} lbs** "
@@ -527,7 +538,11 @@ def render_data():
         combined = s.merge(f[["field_id", "grower_name", "farm_name", "lat", "lon",
                               "irrigated", "recorded_by"]], on="field_id", how="left")
         if "yield_lbs_per_acre" in combined and "acres" in combined:
-            combined["total_lbs"] = (combined.yield_lbs_per_acre * combined.acres).round(0)
+            # to_numeric first: before anything is harvested the column is all-null,
+            # which pandas types as object, and object * float can't be rounded.
+            yield_pa = pd.to_numeric(combined["yield_lbs_per_acre"], errors="coerce")
+            acres_col = pd.to_numeric(combined["acres"], errors="coerce")
+            combined["total_lbs"] = (yield_pa * acres_col).round(0)
         st.dataframe(combined, width="stretch", hide_index=True)
     elif len(f):
         st.dataframe(f, width="stretch", hide_index=True)
