@@ -106,6 +106,7 @@ def today():
 
 
 fields_df = db.read("fields")
+PHOTOS_READY = db.photos_enabled()
 YEAR_DEFAULT = today().year
 MAP_HOME = (36.0, -98.0)   # where the map opens before a field is pinned (NW Oklahoma)
 
@@ -248,6 +249,66 @@ def prior(row, col):
     if row is None or col not in row or pd.isna(row[col]):
         return None
     return row[col]
+
+
+def photo_block(stage, *, key, season=None, visit_id=None, label="Photos"):
+    """
+    Snap or attach photos, and show what is already here. Used from every tab —
+    a picture of a weedy patch says more than a condition score, and in a year
+    it is the only way to remember what the field actually looked like.
+    """
+    if not PHOTOS_READY:
+        st.caption("📷 Photos aren't switched on yet — run `schema_photos.sql` in "
+                   "the Supabase SQL editor and they'll appear here.")
+        return
+
+    existing = db.photos_for(active_fid, season_year=season, stage=stage,
+                             visit_id=visit_id)
+
+    if len(existing):
+        cols = st.columns(3)
+        for i, r in enumerate(existing.itertuples()):
+            with cols[i % 3]:
+                data = db.photo_bytes(r.storage_path)
+                if data:
+                    cap = r.caption if pd.notna(r.caption) and r.caption else ""
+                    by = f" · {r.taken_by}" if pd.notna(getattr(r, "taken_by", None)) \
+                        and getattr(r, "taken_by", "") else ""
+                    st.image(data, caption=(cap + by) or None, width="stretch")
+                    if st.button("Remove", key=f"rmph_{r.id}"):
+                        ok, msg = db.delete_photo(r.id, r.storage_path)
+                        if ok:
+                            st.cache_data.clear()
+                            st.rerun()
+                        else:
+                            st.error(msg)
+                else:
+                    st.caption("(image unavailable)")
+
+    with st.expander(f"{label} — add" if len(existing) else f"{label} — add one"):
+        # file_uploader rather than camera_input: on a phone this offers the
+        # camera *and* the photo library, so a picture taken earlier still works.
+        shots = st.file_uploader("Take or choose photo(s)",
+                                 type=["jpg", "jpeg", "png", "heic", "webp"],
+                                 accept_multiple_files=True, key=f"ph_{key}")
+        cap = st.text_input("Caption (optional)", key=f"phcap_{key}",
+                            placeholder="What are we looking at?")
+        if st.button("Add photo(s)", key=f"phgo_{key}", disabled=not shots):
+            done, failed = 0, []
+            for s in shots:
+                ok, msg = db.add_photo(s.getvalue(), field_id=active_fid,
+                                       stage=stage, season_year=season,
+                                       visit_id=visit_id, caption=cap, taken_by=WHO)
+                if ok:
+                    done += 1
+                else:
+                    failed.append(msg)
+            if done:
+                st.cache_data.clear()
+            if failed:
+                st.error(failed[0])
+            if done and not failed:
+                st.rerun()
 
 
 def prior_num(row, col):
@@ -491,6 +552,10 @@ with tab_plant:
                 else:
                     st.error(msg)
 
+        st.divider()
+        photo_block("planting", key="plant", season=int(season_year),
+                    label="Photos at planting")
+
 
 # ── Mid-season visits (as many as the grower wants) ────────────────────────
 with tab_visit:
@@ -515,6 +580,9 @@ with tab_visit:
                     st.markdown(f"**{r.visit_date}**{stage}{score}{by}")
                     if pd.notna(r.notes) and r.notes:
                         st.write(r.notes)
+                    mgmt = getattr(r, "management_notes", None)
+                    if pd.notna(mgmt) and mgmt:
+                        st.markdown(f"*Management:* {mgmt}")
 
                     # Anyone can correct a visit they logged — a mistyped note is
                     # otherwise permanent, since visits only ever got appended.
@@ -539,13 +607,18 @@ with tab_visit:
                         e_notes = st.text_area(
                             "Observations", value=r.notes if pd.notna(r.notes) else "",
                             key=f"ev_notes_{vid}")
+                        e_mgmt = st.text_area(
+                            "Weed / crop management",
+                            value=mgmt if pd.notna(mgmt) and mgmt else "",
+                            key=f"ev_mgmt_{vid}")
 
                         b1, b2 = st.columns(2)
                         if b1.button("Save changes", key=f"ev_save_{vid}",
                                      type="primary"):
                             ok, msg = db.update_row("visits", vid, dict(
                                 visit_date=str(e_date), growth_stage=e_stage,
-                                condition_score=int(e_score), notes=e_notes))
+                                condition_score=int(e_score), notes=e_notes,
+                                management_notes=e_mgmt))
                             if ok:
                                 st.cache_data.clear()
                                 st.rerun()
@@ -558,6 +631,9 @@ with tab_visit:
                                 st.rerun()
                             else:
                                 st.error(msg)
+
+                    photo_block("visit", key=f"v{vid}", season=int(season_year),
+                                visit_id=vid, label="Photos from this visit")
         else:
             st.caption("No visits logged for this field-year yet.")
 
@@ -567,23 +643,45 @@ with tab_visit:
         score = st.slider("Crop condition (1 poor → 5 excellent)", 1, 5, 3, key="v_score")
         vnotes = st.text_area("Observations", key="v_notes",
                               placeholder="Stand quality, weed pressure, moisture stress…")
+        vmgmt = st.text_area(
+            "Weed / crop management", key="v_mgmt",
+            help="What has the grower actually done since last time? Ask them as "
+                 "you walk the field and write it down in their words.",
+            placeholder="Sprayed for pigweed 10 days ago, cultivated once…")
+        vshots = st.file_uploader("Photos from this visit",
+                                  type=["jpg", "jpeg", "png", "heic", "webp"],
+                                  accept_multiple_files=True, key="v_shots")
 
         if st.button("Add this visit", type="primary", key="v_save"):
-            if not (vnotes or stage):
-                st.error("Add an observation or a growth stage — "
-                         "a visit with neither records nothing.")
+            if not (vnotes or stage or vmgmt or vshots):
+                st.error("Add an observation, a growth stage, a management note "
+                         "or a photo — a visit with none of those records nothing.")
             else:
-                ok, msg = db.insert("visits", dict(
+                # insert_returning so any photos taken on this visit can be
+                # attached to it, rather than floating loose against the season.
+                ok, msg, vid_new = db.insert_returning("visits", dict(
                     field_id=active_fid, season_year=int(season_year),
                     visit_date=str(vdate), growth_stage=stage,
                     condition_score=int(score), notes=vnotes,
-                    recorded_by=WHO))
+                    management_notes=vmgmt, recorded_by=WHO))
                 if ok:
+                    failed = []
+                    for s in (vshots or []):
+                        pok, pmsg = db.add_photo(
+                            s.getvalue(), field_id=active_fid, stage="visit",
+                            season_year=int(season_year), visit_id=vid_new,
+                            caption="", taken_by=WHO)
+                        if not pok:
+                            failed.append(pmsg)
                     st.cache_data.clear()
-                    # Clear the entry boxes so the next visit starts blank.
-                    for k in ("v_notes", "v_stage", "v_score"):
-                        st.session_state.pop(k, None)
-                    st.rerun()
+                    if failed:
+                        # The visit is saved; say so before complaining about photos.
+                        st.warning(f"Visit saved, but a photo didn't upload: {failed[0]}")
+                    else:
+                        # Clear the entry boxes so the next visit starts blank.
+                        for k in ("v_notes", "v_stage", "v_score", "v_mgmt", "v_shots"):
+                            st.session_state.pop(k, None)
+                        st.rerun()
                 else:
                     st.error(msg)
 
@@ -626,6 +724,10 @@ with tab_harvest:
                     st.cache_data.clear()
                 else:
                     st.error(msg)
+
+        st.divider()
+        photo_block("harvest", key="harv", season=int(season_year),
+                    label="Photos at harvest")
 
 
 # ── Data review / export ───────────────────────────────────────────────────
@@ -712,6 +814,12 @@ def render_manage():
         st.caption(f"Editing **{active_fid}** — chosen with the working-field "
                    "picker at the top of the page.")
 
+        # Photos of the field itself, not of a season: what it looks like, where
+        # the gate is, which way the rows run. Useful for finding it again.
+        photo_block("field", key="field", season=None,
+                    label="Photos of this field")
+        st.divider()
+
         e_fid = st.text_input("Field ID", value=str(cur.field_id), key="ed_fid",
                               help="Renaming carries the planting, visit and harvest "
                                    "records with it, so the season-over-season link "
@@ -765,8 +873,10 @@ def render_manage():
                 if len(db.read("field_seasons")) else 0
             visits_n = len(db.read("visits").query("field_id == @active_fid")) \
                 if len(db.read("visits")) else 0
+            photos_n = len(db.photos_for(active_fid))
             st.warning(f"Deleting **{active_fid}** also removes **{seasons_n} season "
-                       f"record(s)** and **{visits_n} visit(s)**. This cannot be undone.")
+                       f"record(s)**, **{visits_n} visit(s)** and **{photos_n} photo(s)**. "
+                       f"This cannot be undone.")
             confirm = st.text_input(f"Type {active_fid} to confirm", key="del_confirm")
             if st.button("Delete field", key="del_go", disabled=confirm != active_fid):
                 ok, msg, counts = db.delete_field(active_fid)
@@ -774,8 +884,9 @@ def render_manage():
                     st.cache_data.clear()
                     for k in ("active_fid", "field_picker", "del_confirm"):
                         st.session_state.pop(k, None)
-                    st.success(f"{msg} Removed {counts['field_seasons']} season record(s) "
-                               f"and {counts['visits']} visit(s).")
+                    st.success(f"{msg} Removed {counts['field_seasons']} season record(s), "
+                               f"{counts['visits']} visit(s) and "
+                               f"{counts.get('photos', 0)} photo(s).")
                     st.rerun()
                 else:
                     st.error(msg)
