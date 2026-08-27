@@ -1,15 +1,23 @@
-# Free-tier Supabase pauses a project after 7 days without activity, which for a
-# seasonal field logger is a normal quiet stretch — and the failure lands on a
-# grower standing in a field with an app that just doesn't work. This pings the
-# database often enough that the inactivity timer never runs out.
+# Two separate sleeps, two separate timers, and missing either one lands on a
+# grower standing in a field with an app that will not work:
+#
+#   Supabase pauses a free project after 7 days without activity. A quiet week
+#   mid-season is completely normal here.
+#
+#   Streamlit Community Cloud sleeps an app after hours without a visitor. Waking
+#   takes about 30 seconds, which reads as "broken" to someone in a field with one
+#   bar. Rebooting the app does not help: the clock is about traffic, not uptime.
+#
+# So this pings both. Every 6 hours, which is driven by the app timer — the
+# database would be happy with far less.
 #
 # Deliberately loud: a bad response fails the job so GitHub emails us, rather
-# than the ping quietly rotting and the pause arriving as a surprise.
-name: Keep Supabase warm
+# than the ping quietly rotting and the sleep arriving as a surprise.
+name: Keep the logger warm
 
 on:
   schedule:
-    - cron: "17 8 */3 * *"   # every 3 days, comfortably inside the 7-day window
+    - cron: "17 */6 * * *"    # every 6 hours; the app sleeps long before the database
   workflow_dispatch:          # and runnable by hand, for testing
 
 jobs:
@@ -48,4 +56,27 @@ jobs:
             echo "${table}: HTTP 200"
           done
 
-          echo "All three tables answered. Inactivity timer reset."
+          echo "All three tables answered. Database inactivity timer reset."
+
+      - name: Visit the app
+        run: |
+          set -euo pipefail
+          URL="https://mungbeanlog.streamlit.app/"
+
+          # A cookie jar is essential. Streamlit answers a bare request with a 303
+          # into its session handshake and loops forever without one, which looks
+          # exactly like an auth wall or a dead app. Learned the hard way.
+          code=$(curl -sS -L --max-redirs 12 --max-time 90 \
+            -c /tmp/jar -b /tmp/jar \
+            -A "Mozilla/5.0 (keep-warm; +github-actions)" \
+            -o /tmp/app.html -w "%{http_code}" "$URL") || {
+              echo "::error::Could not reach $URL"
+              exit 1
+            }
+
+          if [ "$code" != "200" ]; then
+            echo "::error::$URL returned HTTP $code (expected 200)."
+            head -c 400 /tmp/app.html || true
+            exit 1
+          fi
+          echo "App answered 200 ($(wc -c < /tmp/app.html) bytes). Sleep timer reset."
