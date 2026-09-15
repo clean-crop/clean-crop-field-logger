@@ -334,6 +334,57 @@ with tab_new:
     grower = c1.text_input("Grower name *", key="nf_grower")
     farm = c2.text_input("Farm name", key="nf_farm")
 
+    _WATER = ["Dryland", "Irrigated"]
+    _w_prev = st.session_state.get("_water_value")
+    water = st.radio("Water *", _WATER,
+                     index=_WATER.index(_w_prev) if _w_prev in _WATER else None,
+                     horizontal=True, key="nf_water")
+    if water:
+        st.session_state["_water_value"] = water
+
+    # Pre-filled, not merely suggested. This started as placeholder text the user
+    # typed over, on the reasoning that an ID which must survive to 2027 deserves a
+    # deliberate keystroke. Five real fields later the shapes were DOE-1, Test 4,
+    # Cherokee-01, 2-01 — four conventions and a space. A default people accept
+    # produces consistency; a suggestion people retype does not.
+    #
+    # A keyed widget's session_state beats `value=`, so the box would otherwise
+    # freeze at whatever the first render produced. Regenerate it whenever the
+    # grower changes, and leave a hand-edited ID alone until they do.
+    fid_hint = db.suggest_field_id(grower, fields_df)
+    if st.session_state.get("_fid_grower") != grower:
+        st.session_state["_fid_grower"] = grower
+        st.session_state["_fid_value"] = fid_hint
+        st.session_state["nf_fid"] = fid_hint
+    # Re-seed from a plain session key, not just on the grower changing. "Use
+    # these coordinates" sits above this box and calls st.rerun(), which aborts
+    # the script before this widget renders — and Streamlit discards the state of
+    # any widget a completed run never reached. Without this the ID silently
+    # empties the moment someone pins a location.
+    if not st.session_state.get("nf_fid"):
+        st.session_state["nf_fid"] = st.session_state.get("_fid_value", fid_hint)
+    fid = st.text_input("Field ID *", key="nf_fid",
+                        help="Permanent identifier, reused every season. Filled in "
+                             "for you as grower surname + number, e.g. DOE-01. "
+                             "Change it if you must, but keep the shape.")
+    if fid:
+        st.session_state["_fid_value"] = fid      # survive the next discarded run
+    if fid and fid != fid_hint:
+        st.caption(f"Standard for this grower would be **{fid_hint}**.")
+
+    if not st.session_state.get("nf_notes"):
+        st.session_state["nf_notes"] = st.session_state.get("_notes_value", "")
+    nf_notes = st.text_area("Notes", key="nf_notes",
+                            placeholder="Anything notable about this ground — "
+                                        "creek bottom, drainage, past problems…")
+    if nf_notes:
+        st.session_state["_notes_value"] = nf_notes
+
+    # The Location block sits last on purpose. "Use these coordinates" calls
+    # st.rerun(), which aborts the script where it stands — and Streamlit
+    # discards the state of every widget a completed run never reached. With
+    # the map above the other inputs, pinning a location silently wiped the
+    # Field ID, the water choice and the notes. Nothing below it now.
     st.markdown("**Location**")
     st.caption("Pin it on the map while standing in the field, **or** type coordinates "
                "you already have — both work, use whichever suits.")
@@ -426,18 +477,6 @@ with tab_new:
             st.session_state["nf_lon"] = round(m_lon, 6)
             st.rerun()
 
-    water = st.radio("Water *", ["Dryland", "Irrigated"], index=None,
-                     horizontal=True, key="nf_water")
-
-    fid_hint = db.suggest_field_id(grower, fields_df)
-    fid = st.text_input("Field ID *", key="nf_fid", placeholder=fid_hint,
-                        help="Permanent identifier, reused every season. "
-                             "Convention: grower surname + number, e.g. DOE-01.")
-    st.caption(f"Suggested next ID for this grower: **{fid_hint}** — type it in.")
-
-    nf_notes = st.text_area("Notes", key="nf_notes",
-                            placeholder="Anything notable about this ground — "
-                                        "creek bottom, drainage, past problems…")
 
     # Flag coordinates that land on an already-registered field. Compared with a
     # distance tolerance (1e-5 deg ~ 1 m) rather than rounded equality: pandas
@@ -456,6 +495,7 @@ with tab_new:
                                 key="nf_allow_dup_loc")
 
     if st.button("Save field", type="primary", key="nf_save"):
+        typed_fid, fid = fid, db.normalise_field_id(fid)
         if not (grower and fid):
             st.error("Grower name and Field ID are required.")
         elif not has_pin:
@@ -481,16 +521,24 @@ with tab_new:
                 # Popping resets a widget to its default; assigning to a widget key
                 # after the widget exists raises, so these must be popped, not set.
                 for k in ("nf_lat", "nf_lon", "nf_notes", "nf_map", "nf_water",
-                          "nf_fid", "nf_mlat", "nf_mlon", "nf_allow_dup_loc"):
+                          "nf_fid", "nf_mlat", "nf_mlon", "nf_allow_dup_loc",
+                          "_fid_value", "_fid_grower", "_water_value",
+                          "_notes_value"):
                     st.session_state.pop(k, None)
                 st.session_state["active_fid"] = fid       # carry into the other tabs
                 st.session_state.pop("field_picker", None)
                 st.session_state["_just_saved"] = fid
+                if typed_fid != fid:
+                    st.session_state["_saved_tidied"] = typed_fid
                 st.rerun()
 
     if st.session_state.get("_just_saved"):
-        st.success(f"Saved **{st.session_state.pop('_just_saved')}** and made it the "
-                   "working field. Planting, Visits and Harvest now point at it.")
+        saved_as = st.session_state.pop("_just_saved")
+        tidied = st.session_state.pop("_saved_tidied", None)
+        st.success(f"Saved **{saved_as}** and made it the working field. "
+                   "Planting, Visits and Harvest now point at it."
+                   + (f"  \n(Tidied from *{tidied}* to keep IDs consistent.)"
+                      if tidied else ""))
 
 
 # ── Planting ───────────────────────────────────────────────────────────────
@@ -854,6 +902,7 @@ def render_manage():
                                key="ed_notes")
 
         if st.button("Save changes", type="primary", key="ed_save"):
+            e_fid = db.normalise_field_id(e_fid)
             clash = (e_fid != active_fid and len(fields_df)
                      and e_fid in set(fields_df.field_id.astype(str)))
             if not (e_fid and e_grower):

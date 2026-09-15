@@ -333,6 +333,23 @@ def delete_field(field_id: str):
     return True, f"Deleted {field_id}.", counts
 
 
+def normalise_field_id(raw: str) -> str:
+    """
+    Force a typed id into the house shape: upper case, no spaces, nothing but
+    letters, digits, dash and underscore. `Test 4` becomes `TEST-4`.
+
+    Done on save rather than as-you-type, so the box stays comfortable to edit —
+    but it means a space can never reach the database, where it would be awkward
+    in URLs, CSV filters and anything scripted against it later.
+    """
+    import re
+    s = (raw or "").strip().upper()
+    s = re.sub(r"\s+", "-", s)
+    s = re.sub(r"[^A-Z0-9\-_]", "", s)
+    s = re.sub(r"-{2,}", "-", s).strip("-")
+    return s
+
+
 def suggest_field_id(grower_name: str, existing: pd.DataFrame) -> str:
     """
     Propose a stable, readable field id like 'DOE-02', built from the grower's

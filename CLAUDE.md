@@ -60,9 +60,13 @@ halves are routinely entered by different people on different days.
 - **Both map-pin and typed coordinates are first-class.** Typed entry is not a
   fallback: fields recorded before this app existed already have coordinates, and
   pasting them is more accurate than re-tapping a map.
-- **Field ID is never pre-filled.** The suggestion (grower surname + number,
-  `DOE-01`) is placeholder text the user types over. It is the one value that must
-  survive to 2027, so it gets a deliberate keystroke.
+- **Field ID is pre-filled** as grower surname + number (`DOE-01`), and
+  normalised on save — upper case, no spaces. It began as placeholder text the
+  user typed over, on the reasoning that a value which must survive to 2027
+  deserves a deliberate keystroke. Five real fields later the shapes were
+  `Doe-1`, `Test 4`, `Cherokee-01`, `2-01`: four conventions and a space. A
+  default people accept produces consistency; a suggestion people retype does
+  not. Reversed deliberately, on evidence.
 - **Planting captures seed lbs/acre, harvest captures lbs/acre harvested** — both
   entered directly, totals derived. Variety, previous crop and years-of-experience
   were cut as not worth the phone keystrokes; soil condition at planting was kept
@@ -85,6 +89,12 @@ halves are routinely entered by different people on different days.
   `value=`, so a suggestion passed as `value=` silently freezes at its first
   render. And you cannot *assign* to a widget key after the widget exists — pop it
   to reset it.
+- **`st.rerun()` destroys the state of every widget below it.** The script aborts
+  where it stands, and Streamlit discards state for anything a completed run never
+  reached. "Use these coordinates" sat above the Field ID, water and notes inputs
+  and silently wiped all three whenever someone pinned a location. Hence the
+  Location block now sits **last** in the New Field form: keep any control that
+  reruns below the inputs it must not clobber.
 - **`requirements.txt` uses loose lower bounds on purpose.** Exact pins from a
   local Python 3.13 env are often unresolvable on the host — that is what stalls
   Streamlit Cloud builds. Learned on `clean_crop_monitor`.
