@@ -28,12 +28,21 @@ The field and season year are selected **once above the tabs**, and Planting /
 Visits / Harvest all act on that selection — a grower standing in one spot fills
 everything in without re-picking. Saving a new field makes it active immediately.
 
-**"Which field am I in?"** sits beside that picker, open to every role. Field IDs
-are arbitrary by design, so coordinates are the only thing that answers the
-question a year later — and the map of registered fields lives on the Data tab,
-which a collector cannot see. It shows every field as a labelled pin, locates the
-phone, and ranks the closest by distance. If the nearest is over a mile off it
-says so, rather than letting someone log against the wrong field.
+**"Not sure which field you are in?"** sits beside that picker on those same
+tabs, open to every role. Field IDs are arbitrary by design, so coordinates are
+the only thing that answers the question a year later. It shows every field as a
+labelled pin, locates the phone, and ranks the closest by distance. Behind a
+button rather than an expander: Streamlit builds a collapsed expander's contents
+anyway, and every tab renders on every run, so four always-on maps would be four
+folium payloads per interaction on a phone.
+
+**Registering near an existing field warns at half a mile**, naming it and
+quoting its acreage to check against the ground underfoot, and blocks until the
+grower confirms it really is different. The original check fired within a metre,
+which only caught coordinates left over from the previous save — two people
+pinning opposite ends of one 160-acre field are hundreds of metres apart and
+sailed through, producing two IDs for one field. A warning rather than a block
+because at 75 acres a neighbouring field genuinely can be that close.
 
 ## Two roles
 

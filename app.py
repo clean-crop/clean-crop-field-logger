@@ -171,12 +171,45 @@ def working_field_controls(slot):
     c1.selectbox("Working field", labels, index=idx, key=fkey, on_change=_sync)
     c2.number_input("Season", 2020, 2100, season_year, key=skey, on_change=_sync)
 
+    if st.session_state.get("_finder_slot") == slot:
+        if st.button("Hide the map", key=f"wfhide_{slot}"):
+            st.session_state.pop("_finder_slot", None)
+            st.rerun()
+        render_field_finder()
+    elif st.button("Not sure which field you are in?", key=f"wfind_{slot}"):
+        st.session_state["_finder_slot"] = slot
+        st.rerun()
+
 def metres_between(lat1, lon1, lat2, lon2):
     """Great-circle distance in metres."""
     from math import radians, sin, cos, asin, sqrt
     dlat, dlon = radians(lat2 - lat1), radians(lon2 - lon1)
     a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2) ** 2
     return 2 * 6371000 * asin(sqrt(a))
+
+
+DUP_WARN_M = 804.672        # half a mile
+
+
+def field_acres(fid):
+    """
+    Most recently recorded acreage for a field, or None. Shown beside a
+    proximity warning so the grower can check it against the ground they are
+    standing on — a name alone does not tell you whether it is the same field.
+    """
+    s = db.read("field_seasons")
+    if not len(s) or "acres" not in s:
+        return None
+    mine = s[s.field_id == fid].copy()
+    if not len(mine):
+        return None
+    mine["acres"] = pd.to_numeric(mine["acres"], errors="coerce")
+    mine = mine.dropna(subset=["acres"])
+    if not len(mine):
+        return None
+    if "season_year" in mine:
+        mine = mine.sort_values("season_year")
+    return float(mine["acres"].iloc[-1])
 
 
 def render_field_finder():
@@ -246,10 +279,6 @@ def render_field_finder():
     except Exception as e:
         st.caption(f"Map unavailable ({e}).")
 
-
-if active_fid is not None:
-    with st.expander("Which field am I in?"):
-        render_field_finder()
 
 st.divider()
 
@@ -523,20 +552,38 @@ with tab_new:
             st.rerun()
 
 
-    # Flag coordinates that land on an already-registered field. Compared with a
-    # distance tolerance (1e-5 deg ~ 1 m) rather than rounded equality: pandas
-    # rounds half-to-even and Python's round() does not, so they disagree on .5.
-    dup_loc = None
+    # Warn when the pin lands near an already-registered field. The old check
+    # fired within a metre, which only ever caught coordinates left over from the
+    # previous save — two people pinning opposite ends of the same 160-acre field
+    # are several hundred metres apart and sailed straight through, producing two
+    # IDs for one field, which is the single failure this tool exists to prevent.
+    #
+    # Half a mile, and a warning rather than a block: at 75 acres a neighbouring
+    # field really can be this close, so the grower decides, not the app.
+    near = []
     if has_pin and len(fields_df):
-        close = ((fields_df.lat - lat).abs() < 1e-5) & ((fields_df.lon - lon).abs() < 1e-5)
-        if close.any():
-            dup_loc = str(fields_df.loc[close, "field_id"].iloc[0])
+        located = fields_df.dropna(subset=["lat", "lon"])
+        for r in located.itertuples():
+            d = metres_between(lat, lon, r.lat, r.lon)
+            if d < DUP_WARN_M:
+                near.append((d, str(r.field_id), str(r.grower_name)))
+        near.sort()
 
     allow_dup = False
-    if dup_loc:
-        st.warning(f"That pin is within about a metre of **{dup_loc}**. "
-                   f"If this is a different field, re-pin it.")
-        allow_dup = st.checkbox("Save anyway — genuinely two fields at one point",
+    if near:
+        lines = []
+        for d, nid, ngrower in near[:3]:
+            ac = field_acres(nid)
+            size = f", {ac:,.0f} acres" if ac else ""
+            lines.append(f"- **{nid}** — {ngrower}{size} · "
+                         f"{d:,.0f} m away ({d / 1609.34:.2f} miles)")
+        st.warning("There " + ("is already a registered field" if len(near) == 1
+                               else f"are already {len(near)} registered fields")
+                   + " within half a mile of this pin:\n\n" + "\n".join(lines)
+                   + "\n\nCheck the acres against the field you are standing in. "
+                     "If it is the same ground, go back and use the existing field "
+                     "rather than registering it twice.")
+        allow_dup = st.checkbox("I have checked — this is a different field",
                                 key="nf_allow_dup_loc")
 
     if st.button("Save field", type="primary", key="nf_save"):
@@ -549,9 +596,10 @@ with tab_new:
             st.error("Choose Dryland or Irrigated.")
         elif len(fields_df) and fid in set(fields_df.field_id.astype(str)):
             st.error(f"Field ID '{fid}' already exists — pick a different one.")
-        elif dup_loc and not allow_dup:
-            st.error(f"That pin matches {dup_loc}. Re-pin the field, or tick the box "
-                     f"above to save both at the same point.")
+        elif near and not allow_dup:
+            st.error(f"There is a registered field {near[0][0]:,.0f} m away "
+                     f"({near[0][1]}). Confirm above that this is a different "
+                     f"field, or go back and use the existing one.")
         else:
             ok, msg = db.insert("fields", dict(
                 field_id=fid, grower_name=grower, farm_name=farm,
