@@ -117,17 +117,59 @@ def field_label(r):
     return f"{r.field_id} — {r.grower_name}{farm}"
 
 
-active_fid = None
-if len(fields_df):
-    opts = {field_label(r): r.field_id for r in fields_df.itertuples()}
-    # Default to the field most recently registered or worked on, so saving a
-    # field and moving to Planting carries the selection across with no re-picking.
-    remembered = st.session_state.get("active_fid")
-    labels = list(opts)
-    idx = next((i for i, lb in enumerate(labels) if opts[lb] == remembered), 0)
-    chosen = st.selectbox("Working field", labels, index=idx, key="field_picker")
-    active_fid = opts[chosen]
-    st.session_state["active_fid"] = active_fid
+# Held in session state rather than read off a widget here, because the picker
+# is drawn inside each tab that needs it. Registering a field is the one job that
+# does not act on the working field, so New Field does not show the control —
+# seeing "Working field: DOE-01" while creating DOE-02 only invites the question
+# of which one you are editing.
+FIELD_OPTS = {field_label(r): r.field_id for r in fields_df.itertuples()} \
+    if len(fields_df) else {}
+
+
+def _settle_active_field():
+    """The working field, defaulting to the most recently registered one."""
+    ids = list(FIELD_OPTS.values())
+    if not ids:
+        st.session_state.pop("active_fid", None)
+        return None
+    fid = st.session_state.get("active_fid")
+    if fid not in ids:
+        fid = ids[-1]
+    st.session_state["active_fid"] = fid
+    return fid
+
+
+active_fid = _settle_active_field()
+season_year = int(st.session_state.get("_season_year", YEAR_DEFAULT))
+
+WF_SLOTS = ("plant", "visit", "harvest", "fix")   # Data is whole-dataset, no picker
+
+
+def working_field_controls(slot):
+    """
+    The field + season pickers, drawn once per tab. Streamlit renders every tab
+    on every run, so one shared key would collide — each slot gets its own, and a
+    change in any of them writes through to session state and drops the others so
+    they re-read it rather than showing a stale label.
+    """
+    if not FIELD_OPTS:
+        return
+    labels = list(FIELD_OPTS)
+    fkey, skey = f"wf_{slot}", f"sy_{slot}"
+
+    def _sync():
+        st.session_state["active_fid"] = FIELD_OPTS[st.session_state[fkey]]
+        st.session_state["_season_year"] = int(st.session_state[skey])
+        for other in WF_SLOTS:
+            if other != slot:
+                st.session_state.pop(f"wf_{other}", None)
+                st.session_state.pop(f"sy_{other}", None)
+
+    idx = next((i for i, lb in enumerate(labels)
+                if FIELD_OPTS[lb] == active_fid), 0)
+    c1, c2 = st.columns([3, 1])
+    c1.selectbox("Working field", labels, index=idx, key=fkey, on_change=_sync)
+    c2.number_input("Season", 2020, 2100, season_year, key=skey, on_change=_sync)
 
 def metres_between(lat1, lon1, lat2, lon2):
     """Great-circle distance in metres."""
@@ -209,7 +251,6 @@ if active_fid is not None:
     with st.expander("Which field am I in?"):
         render_field_finder()
 
-season_year = st.number_input("Season year", 2020, 2100, YEAR_DEFAULT, key="season_year")
 st.divider()
 
 # Everyone can correct what they entered, so Manage is shown to all. The Data tab
@@ -329,6 +370,7 @@ with tab_new:
         "Do this once per physical field. The **Field ID** is what links this "
         "field across seasons — reuse it every year rather than creating a new one."
     )
+    st.caption(r"Fields marked **\*** must be filled in before you can save.")
 
     c1, c2 = st.columns(2)
     grower = c1.text_input("Grower name *", key="nf_grower")
@@ -367,6 +409,9 @@ with tab_new:
                         help="Permanent identifier, reused every season. Filled in "
                              "for you as grower surname + number, e.g. DOE-01. "
                              "Change it if you must, but keep the shape.")
+    st.caption("Filled in automatically from the grower's surname, numbered in "
+               "order — type over it only if you need something different. "
+               "Saved in capitals with no spaces.")
     if fid:
         st.session_state["_fid_value"] = fid      # survive the next discarded run
     if fid and fid != fid_hint:
@@ -544,6 +589,7 @@ with tab_new:
 # ── Planting ───────────────────────────────────────────────────────────────
 with tab_plant:
     st.subheader("Planting record")
+    working_field_controls("plant")
     if not needs_field():
         row = season_row(active_fid, season_year)
         st.caption(f"**{active_fid}** · {int(season_year)}"
@@ -608,6 +654,7 @@ with tab_plant:
 # ── Mid-season visits (as many as the grower wants) ────────────────────────
 with tab_visit:
     st.subheader("Field visits")
+    working_field_controls("visit")
     if not needs_field():
         st.caption(f"**{active_fid}** · {int(season_year)}")
 
@@ -737,6 +784,7 @@ with tab_visit:
 # ── Harvest ────────────────────────────────────────────────────────────────
 with tab_harvest:
     st.subheader("Harvest record")
+    working_field_controls("harvest")
     if not needs_field():
         row = season_row(active_fid, season_year)
         st.caption(f"**{active_fid}** · {int(season_year)}")
@@ -869,6 +917,7 @@ def render_data():
 # ── Manage: correct or remove a registered field (reviewer only) ───────────
 def render_manage():
     st.subheader("Edit or remove a field")
+    working_field_controls("fix")
     if active_fid is None:
         st.info("No fields registered yet.")
     else:
