@@ -740,18 +740,32 @@ def render_data():
     c3.metric("Visits", len(v))
 
     combined = pd.DataFrame()
-    if len(s) and len(f):
-        combined = s.merge(f[["field_id", "grower_name", "farm_name", "lat", "lon",
-                              "irrigated", "recorded_by"]], on="field_id", how="left")
+    if len(f):
+        # Join outward from `fields`, not from `field_seasons`. The other
+        # direction drops any field that has been registered but not yet planted,
+        # so a newly registered field is silently absent from the table and from
+        # the export — which reads as lost data rather than as work in progress.
+        cols = [c for c in ["field_id", "grower_name", "farm_name", "lat", "lon",
+                            "irrigated", "recorded_by"] if c in f]
+        combined = f[cols].merge(s, on="field_id", how="left") if len(s) else f[cols].copy()
+
         if "yield_lbs_per_acre" in combined and "acres" in combined:
             # to_numeric first: before anything is harvested the column is all-null,
             # which pandas types as object, and object * float can't be rounded.
             yield_pa = pd.to_numeric(combined["yield_lbs_per_acre"], errors="coerce")
             acres_col = pd.to_numeric(combined["acres"], errors="coerce")
             combined["total_lbs"] = (yield_pa * acres_col).round(0)
+
         st.dataframe(combined, width="stretch", hide_index=True)
-    elif len(f):
-        st.dataframe(f, width="stretch", hide_index=True)
+
+        # Say plainly which fields are still waiting on a planting record, rather
+        # than leaving the reader to reconcile the count against the rows.
+        planted = set(s.field_id.astype(str)) if len(s) else set()
+        waiting = [str(x) for x in f.field_id if str(x) not in planted]
+        if waiting:
+            st.info(f"**{len(waiting)} field(s) registered with no planting record "
+                    f"yet:** {', '.join(waiting)}. They appear above with the season "
+                    f"columns blank.")
 
     st.markdown("**Export**")
     if len(combined):
